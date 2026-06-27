@@ -1,0 +1,112 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Arena Arsenal</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <canvas id="scene"></canvas>
+
+      <section class="hud topbar">
+        <div class="brand">
+          <span class="signal"></span>
+          <div>
+            <strong>Arena Arsenal</strong>
+            <span id="status">Choose a mode and fight</span>
+          </div>
+        </div>
+        <div class="mode-buttons">
+          <button class="mode active" data-mode="team">Team Battle</button>
+          <button class="mode" data-mode="ffa">Free For All</button>
+          <button class="mode" data-mode="ctf">Capture Flag</button>
+          <button id="rangeMode">Try Range</button>
+        </div>
+        <div class="readout">
+          <span id="coins">Coins 0</span>
+          <span id="kills">Kills 0</span>
+          <span id="modeLabel">Team Battle</span>
+        </div>
+      </section>
+
+      <section class="mobile-status">
+        <div class="rounds">2 / 4</div>
+        <div class="bars">
+          <label><span class="armor-icon"></span><b id="armor">100</b><i class="armor"></i></label>
+          <label><span class="health-icon"></span><b id="healthMini">100</b><i class="life"></i></label>
+        </div>
+        <div class="scoreboard">
+          <strong id="blueScore">0</strong>
+          <span id="roundTimer">02:00</span>
+          <strong id="redScore">0</strong>
+        </div>
+      </section>
+
+      <div id="nameTags" class="name-tags"></div>
+
+      <aside class="hud weapon-panel">
+        <div class="weapon-title">
+          <span id="weaponClass">Assault Rifle</span>
+          <strong id="weaponName">Vanguard AR</strong>
+        </div>
+        <div class="ammo">
+          <span id="ammoNow">32</span>
+          <small>/</small>
+          <span id="ammoMax">32</span>
+        </div>
+        <div class="stat-grid">
+          <label>Damage <span id="statDamage"></span></label>
+          <label>Fire Rate <span id="statRate"></span></label>
+          <label>Range <span id="statRange"></span></label>
+          <label>Cost <span id="statCost"></span></label>
+        </div>
+        <div id="slots" class="slots"></div>
+        <div id="weaponList" class="weapon-list"></div>
+      </aside>
+
+      <section class="hud bottom-left">
+        <div class="health">
+          <span>Health</span>
+          <strong id="health">100</strong>
+        </div>
+        <div class="ability">
+          <span>Right Mouse</span>
+          <strong id="ability">Aim</strong>
+        </div>
+      </section>
+
+      <section class="hud controls">
+        <button id="tryWeapon">Try Weapon</button>
+        <button id="buyWeapon" class="primary">Buy</button>
+        <button id="reload">Reload</button>
+      </section>
+
+      <div class="touch-ui" aria-hidden="true">
+        <div class="touch-left">
+          <button class="round ghost icon-pause">Ⅱ</button>
+          <button class="round ghost icon-bullet">◀</button>
+          <button class="round ghost icon-soldier">♟</button>
+          <div class="joystick"><span></span></div>
+        </div>
+        <div class="touch-right">
+          <button class="round ghost icon-map">⌖</button>
+          <button class="round ghost icon-close">×</button>
+          <button class="round ghost icon-fire">⌁</button>
+          <button class="round ghost icon-aim">◎</button>
+          <button class="round ghost icon-jump">↥</button>
+        </div>
+      </div>
+
+      <div class="crosshair" aria-hidden="true">
+        <i></i><i></i><i></i><i></i>
+      </div>
+
+      <button id="aimLock" class="aim-lock">Click to use mouse aim</button>
+      <div id="toast" class="toast">WASD move, Space jump, mouse aims, left click shoots</div>
+    </div>
+
+    <script type="module" src="./src/game.js"></script>
+  </body>
+</html>
