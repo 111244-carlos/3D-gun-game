@@ -19,10 +19,12 @@ while ($true) {
   $client = $listener.AcceptTcpClient()
   try {
     $stream = $client.GetStream()
+    $stream.ReadTimeout = 2000
+    $stream.WriteTimeout = 2000
     $reader = [System.IO.StreamReader]::new($stream)
     $requestLine = $reader.ReadLine()
 
-    while ($reader.Peek() -gt -1) {
+    while ($true) {
       $line = $reader.ReadLine()
       if ([string]::IsNullOrWhiteSpace($line)) { break }
     }
