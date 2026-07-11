@@ -95,6 +95,7 @@ const ui = {
   tryWeapon: document.querySelector("#tryWeapon"),
   reload: document.querySelector("#reload"),
   aimLock: document.querySelector("#aimLock"),
+  scopeOverlay: document.querySelector("#scopeOverlay"),
   nameTags: document.querySelector("#nameTags"),
   toast: document.querySelector("#toast")
 };
@@ -154,7 +155,7 @@ function init() {
   buildSlots();
   setMode("team");
   equipSlot(0);
-  showToast("WASD move, Space jump, left click shoot, right click aim or ability, 1-4 switch");
+  showToast("WASD move, Space jump, right mouse aim, E Super, 1-4 switch");
 
   document.querySelectorAll(".mode").forEach((button) => {
     button.addEventListener("click", () => setMode(button.dataset.mode));
@@ -392,6 +393,7 @@ function onKeyDown(event) {
     event.preventDefault();
     jump();
   }
+  if (key === "e" && player.ability >= 100) useAbility();
   if (key === "r") reloadWeapon();
   if (["1", "2", "3", "4"].includes(key)) equipSlot(Number(key) - 1);
 }
@@ -420,7 +422,10 @@ function onPointerDown(event) {
   }
   if (event.button === 2) {
     event.preventDefault();
-    if (player.ability >= 100 && !player.aiming) {
+    const weapon = weapons[activeWeaponId];
+    if (weapon.zoom) {
+      player.aiming = true;
+    } else if (player.ability >= 100 && !player.aiming) {
       useAbility();
     } else {
       player.aiming = true;
@@ -1350,6 +1355,12 @@ function updateWeaponView(delta) {
 
   const light = weaponRoot.getObjectByName("muzzleLight");
   if (light) light.intensity = THREE.MathUtils.damp(light.intensity, 0, 18, delta);
+  updateScopeOverlay(aimed);
+}
+
+function updateScopeOverlay(visible) {
+  ui.scopeOverlay.classList.toggle("visible", visible);
+  document.body.classList.toggle("scope-active", visible);
 }
 
 function updateRangeTargets(delta) {
