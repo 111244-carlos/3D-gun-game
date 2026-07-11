@@ -139,6 +139,8 @@ let blueScore = 0;
 let redScore = 0;
 let aimLockRequested = false;
 let uiTimer = 0;
+let audioContext = null;
+let lastHitSound = 0;
 const allyNames = ["Frank", "John", "Michael", "Bob", "Alex", "Sam"];
 const enemyNames = ["Rex", "Viper", "Ghost", "Mason", "Duke", "Blaze"];
 
@@ -382,6 +384,7 @@ function createTarget(size) {
 }
 
 function onKeyDown(event) {
+  unlockAudio();
   const key = event.key.toLowerCase();
   keys.add(key);
 
@@ -408,6 +411,7 @@ function onPointerMove(event) {
 }
 
 function onPointerDown(event) {
+  unlockAudio();
   if (event.target.closest?.("button")) return;
   if (event.button === 0 && aimLockRequested && document.pointerLockElement !== canvas) requestMouseAim();
   if (event.button === 0) {
@@ -639,6 +643,7 @@ function fireWeapon() {
   weaponRoot.position.z += weapon.recoil * 0.08;
   weaponRoot.rotation.x -= weapon.recoil * 0.035;
   flashWeapon(weapon);
+  playSound(weapon.fire);
 
   if (weapon.fire === "burst") {
     pendingBurst = 2;
@@ -666,7 +671,7 @@ function shootHitscan(weapon) {
   const origin = camera.position.clone();
   let closest = null;
 
-  const candidates = player.mode === "range" ? rangeTargets.map((target) => ({ group: target, range: true })) : enemies;
+  const candidates = getDamageCandidates();
   candidates.forEach((target) => {
     const targetPos = target.group.position.clone().add(new THREE.Vector3(0, target.range ? 0 : 1.05, 0));
     const toTarget = targetPos.clone().sub(origin);
@@ -694,11 +699,13 @@ function shootFlame(weapon) {
     particles.push(flame);
   }
 
-  enemies.forEach((enemy) => {
-    const toEnemy = enemy.group.position.clone().add(new THREE.Vector3(0, 1.1, 0)).sub(camera.position);
+  getDamageCandidates().forEach((target) => {
+    const targetPos = getTargetCenter(target);
+    const toEnemy = targetPos.clone().sub(camera.position);
     const distance = toEnemy.length();
     const angle = toEnemy.normalize().dot(direction);
-    if (distance < weapon.range && angle > 0.86) damageTarget(enemy, weapon.damage, enemy.group.position, weapon);
+    const hitRadius = target.range ? target.group.userData.size * 0.85 : 0.85;
+    if (distance < weapon.range + hitRadius && angle > 0.82) damageTarget(target, weapon.damage, targetPos, weapon);
   });
 }
 
@@ -736,18 +743,162 @@ function deployJumpPad() {
 }
 
 function useAbility() {
+  const weapon = weapons[activeWeaponId];
   player.ability = 0;
-  player.velocity.y = Math.max(player.velocity.y, 10.5);
-  player.onGround = false;
-  const direction = getAimDirection(0.012);
-  drawTracer(camera.position, camera.position.clone().addScaledVector(direction, 75), 0x8efbff);
-  enemies.forEach((enemy) => {
-    const toEnemy = enemy.group.position.clone().add(new THREE.Vector3(0, 1, 0)).sub(camera.position);
-    const distance = toEnemy.length();
-    const angle = toEnemy.normalize().dot(direction);
-    if (distance < 46 && angle > 0.84) damageTarget(enemy, 58, enemy.group.position, { name: "Super Burst" });
+  playSound(weapon.fire === "flame" ? "flame" : weapon.fire === "grenade" ? "grenade" : "energy");
+
+  if (weapon.name === "Tri-Burst") {
+    fireSuperHitscan(weapon, { shots: 6, damageMultiplier: 2, interval: 42, spreadMultiplier: 0.8, label: "Tri-Burst Overclock" });
+  } else if (weapon.name === "Vanguard AR") {
+    fireSuperHitscan(weapon, { shots: 10, damageMultiplier: 1.35, interval: 38, spreadMultiplier: 0.55, label: "Vanguard Barrage" });
+  } else if (weapon.name === "Longwatch") {
+    firePiercingShot(weapon, 2.6, "Longwatch Rail Shot");
+  } else if (weapon.name === "Pebble Sling") {
+    launchSuperProjectile({ ...weapon, damage: weapon.damage * 3.2, range: weapon.range * 1.25, speed: weapon.speed * 1.15 }, "arc", "Pebble Meteor");
+  } else if (weapon.name === "Frag Grenade") {
+    for (let i = 0; i < 4; i++) {
+      setTimeout(() => launchSuperProjectile({ ...weapon, damage: weapon.damage * 0.85, spread: weapon.spread + 0.055, speed: weapon.speed * 0.95 }, "grenade", "Cluster Grenade"), i * 90);
+    }
+    showToast("Cluster Grenade launched");
+  } else if (weapon.name === "Jump Pad") {
+    deploySuperJumpPad(weapon);
+  } else if (weapon.name === "Ranger Bow") {
+    fireSuperHitscan(weapon, { shots: 5, damageMultiplier: 1.45, interval: 95, spreadMultiplier: 2.6, label: "Arrow Rain" });
+  } else if (weapon.name === "Steel Crossbow") {
+    firePiercingShot(weapon, 2.15, "Crossbow Skewer");
+  } else if (weapon.name === "Volt Lance") {
+    chainLightning(weapon);
+  } else if (weapon.name === "Pulse Pistol") {
+    fireSuperHitscan(weapon, { shots: 9, damageMultiplier: 1.15, interval: 35, spreadMultiplier: 2.2, label: "Pulse Fan" });
+  } else if (weapon.name === "Ember Hose") {
+    superConeDamage(weapon, weapon.damage * 5.5, weapon.range * 1.55, 0.62, "Inferno Sweep");
+  } else if (weapon.name === "Storm LMG") {
+    fireSuperHitscan(weapon, { shots: 18, damageMultiplier: 1.2, interval: 28, spreadMultiplier: 1.35, label: "Storm Suppression" });
+  } else {
+    fireSuperHitscan(weapon, { shots: 6, damageMultiplier: 1.6, interval: 55, spreadMultiplier: 1, label: `${weapon.name} Super` });
+  }
+}
+
+function fireSuperHitscan(weapon, options) {
+  const superWeapon = {
+    ...weapon,
+    damage: weapon.damage * options.damageMultiplier,
+    spread: weapon.spread * options.spreadMultiplier,
+    range: weapon.range * 1.2,
+    name: options.label
+  };
+  for (let i = 0; i < options.shots; i++) {
+    setTimeout(() => {
+      flashWeapon(superWeapon);
+      playSound(weapon.fire);
+      shootHitscan(superWeapon);
+    }, i * options.interval);
+  }
+  showToast(`${options.label}: ${options.shots} super rounds`);
+}
+
+function firePiercingShot(weapon, damageMultiplier, label) {
+  const direction = getAimDirection(weapon.spread * 0.2);
+  const origin = camera.position.clone();
+  drawTracer(origin, origin.clone().addScaledVector(direction, weapon.range * 1.45), 0x8efbff);
+  getDamageCandidates().forEach((target) => {
+    const targetPos = getTargetCenter(target);
+    const toTarget = targetPos.clone().sub(origin);
+    const forwardDistance = toTarget.dot(direction);
+    if (forwardDistance < 0 || forwardDistance > weapon.range * 1.45) return;
+    const miss = targetPos.distanceTo(origin.clone().addScaledVector(direction, forwardDistance));
+    const hitRadius = target.range ? target.group.userData.size * 0.75 : 0.9;
+    if (miss <= hitRadius) damageTarget(target, weapon.damage * damageMultiplier, targetPos, { ...weapon, name: label });
   });
-  showToast("Super ability launched");
+  flashWeapon(weapon);
+  showToast(label);
+}
+
+function launchSuperProjectile(weapon, kind, label) {
+  launchProjectile({ ...weapon, name: label }, kind);
+  showToast(label);
+}
+
+function deploySuperJumpPad(weapon) {
+  deployJumpPad();
+  player.velocity.y = Math.max(player.velocity.y, 16);
+  player.onGround = false;
+  superExplosionAt(player.position.clone(), 11, 54, { ...weapon, name: "Launch Shockwave" }, 0x25f0d0);
+  showToast("Launch Shockwave");
+}
+
+function chainLightning(weapon) {
+  const origin = camera.position.clone();
+  const direction = getAimDirection(weapon.spread * 0.25);
+  const targets = getDamageCandidates()
+    .map((target) => {
+      const targetPos = getTargetCenter(target);
+      const toTarget = targetPos.clone().sub(origin);
+      const forwardDistance = toTarget.dot(direction);
+      const miss = targetPos.distanceTo(origin.clone().addScaledVector(direction, forwardDistance));
+      return { target, targetPos, forwardDistance, miss };
+    })
+    .filter((item) => item.forwardDistance > 0 && item.forwardDistance < weapon.range * 1.3 && item.miss < (item.target.range ? item.target.group.userData.size : 1.4))
+    .sort((a, b) => a.forwardDistance - b.forwardDistance)
+    .slice(0, 5);
+
+  let previous = origin;
+  targets.forEach((item, index) => {
+    drawTracer(previous, item.targetPos, 0x5be0ff);
+    damageTarget(item.target, weapon.damage * (2.3 - index * 0.25), item.targetPos, { ...weapon, name: "Chain Lightning" });
+    previous = item.targetPos;
+  });
+  if (targets.length === 0) drawTracer(origin, origin.clone().addScaledVector(direction, weapon.range), 0x5be0ff);
+  showToast("Chain Lightning");
+}
+
+function superConeDamage(weapon, damage, range, coneWidth, label) {
+  const direction = getAimDirection(weapon.spread * 0.35);
+  for (let i = 0; i < 28; i++) {
+    const flame = new THREE.Mesh(new THREE.SphereGeometry(THREE.MathUtils.randFloat(0.12, 0.32), 10, 8), materials.flame);
+    const spray = direction.clone().add(new THREE.Vector3(THREE.MathUtils.randFloatSpread(0.26), THREE.MathUtils.randFloatSpread(0.12), THREE.MathUtils.randFloatSpread(0.26))).normalize();
+    flame.position.copy(camera.position).addScaledVector(spray, 1.3);
+    flame.userData.velocity = spray.multiplyScalar(THREE.MathUtils.randFloat(24, 38));
+    flame.userData.life = THREE.MathUtils.randFloat(0.45, 0.78);
+    scene.add(flame);
+    particles.push(flame);
+  }
+  getDamageCandidates().forEach((target) => {
+    const targetPos = getTargetCenter(target);
+    const toTarget = targetPos.clone().sub(camera.position);
+    const distance = toTarget.length();
+    const angle = toTarget.normalize().dot(direction);
+    if (distance < range && angle > coneWidth) damageTarget(target, damage * (1 - distance / (range * 1.35)), targetPos, { ...weapon, name: label });
+  });
+  showToast(label);
+}
+
+function superExplosionAt(point, radius, damage, weapon, color = 0xff7a36) {
+  for (let i = 0; i < 26; i++) addImpact(point.clone().add(new THREE.Vector3(THREE.MathUtils.randFloatSpread(radius * 0.45), THREE.MathUtils.randFloat(0, 3), THREE.MathUtils.randFloatSpread(radius * 0.45))), color);
+  getDamageCandidates().forEach((target) => {
+    const targetPos = getTargetCenter(target);
+    const distance = targetPos.distanceTo(point);
+    if (distance < radius) damageTarget(target, Math.max(8, damage * (1 - distance / radius)), targetPos, weapon);
+  });
+  playSound("explode");
+}
+
+function getSuperName(weapon) {
+  const names = {
+    "Vanguard AR": "Vanguard Barrage",
+    Longwatch: "Rail Shot",
+    "Pebble Sling": "Pebble Meteor",
+    "Tri-Burst": "Overclock Burst",
+    "Frag Grenade": "Cluster Grenade",
+    "Jump Pad": "Launch Shockwave",
+    "Ranger Bow": "Arrow Rain",
+    "Steel Crossbow": "Skewer Bolt",
+    "Volt Lance": "Chain Lightning",
+    "Pulse Pistol": "Pulse Fan",
+    "Ember Hose": "Inferno Sweep",
+    "Storm LMG": "Storm Suppression"
+  };
+  return names[weapon.name] || `${weapon.name} Super`;
 }
 
 function getAimDirection(spread) {
@@ -759,9 +910,88 @@ function getAimDirection(spread) {
   return direction.applyEuler(camera.rotation).normalize();
 }
 
+function getDamageCandidates() {
+  if (player.mode === "range") return rangeTargets.map((target) => ({ group: target, range: true }));
+  return enemies;
+}
+
+function getTargetCenter(target) {
+  return target.group.position.clone().add(new THREE.Vector3(0, target.range ? 0 : 1.05, 0));
+}
+
+function unlockAudio() {
+  if (!audioContext) audioContext = new AudioContext();
+  if (audioContext.state === "suspended") audioContext.resume();
+}
+
+function playSound(kind) {
+  if (!audioContext) return;
+  const soundMap = {
+    hitscan: () => playTone(130, 0.045, "square", 0.08, 0.55),
+    burst: () => playTone(170, 0.035, "square", 0.06, 0.35),
+    energy: () => playTone(520, 0.07, "sawtooth", 0.055, 1.8),
+    arc: () => playTone(220, 0.08, "triangle", 0.05, -0.8),
+    arrow: () => playTone(310, 0.055, "triangle", 0.04, -1.1),
+    bolt: () => playTone(260, 0.05, "square", 0.05, -0.7),
+    grenade: () => playTone(115, 0.12, "triangle", 0.06, -0.35),
+    flame: () => playNoise(0.11, 0.07, 940),
+    pad: () => playTone(360, 0.12, "sine", 0.06, 1.1),
+    explode: () => playNoise(0.45, 0.18, 170),
+    hit: () => playTone(95, 0.035, "square", 0.035, -0.2),
+    kill: () => {
+      playTone(420, 0.08, "triangle", 0.035, 0.6);
+      setTimeout(() => playTone(620, 0.08, "triangle", 0.03, 0.4), 70);
+    }
+  };
+  soundMap[kind]?.();
+}
+
+function playTone(frequency, duration, type, volume, pitchSweep = 0) {
+  const now = audioContext.currentTime;
+  const oscillator = audioContext.createOscillator();
+  const gain = audioContext.createGain();
+  oscillator.type = type;
+  oscillator.frequency.setValueAtTime(frequency, now);
+  if (pitchSweep !== 0) oscillator.frequency.exponentialRampToValueAtTime(Math.max(40, frequency * 2 ** pitchSweep), now + duration);
+  gain.gain.setValueAtTime(volume, now);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+  oscillator.connect(gain);
+  gain.connect(audioContext.destination);
+  oscillator.start(now);
+  oscillator.stop(now + duration);
+}
+
+function playNoise(duration, volume, filterFrequency) {
+  const sampleCount = Math.max(1, Math.floor(audioContext.sampleRate * duration));
+  const buffer = audioContext.createBuffer(1, sampleCount, audioContext.sampleRate);
+  const data = buffer.getChannelData(0);
+  for (let i = 0; i < sampleCount; i++) data[i] = Math.random() * 2 - 1;
+
+  const now = audioContext.currentTime;
+  const source = audioContext.createBufferSource();
+  const filter = audioContext.createBiquadFilter();
+  const gain = audioContext.createGain();
+  source.buffer = buffer;
+  filter.type = "lowpass";
+  filter.frequency.setValueAtTime(filterFrequency, now);
+  filter.frequency.exponentialRampToValueAtTime(Math.max(80, filterFrequency * 0.35), now + duration);
+  gain.gain.setValueAtTime(volume, now);
+  gain.gain.exponentialRampToValueAtTime(0.001, now + duration);
+  source.connect(filter);
+  filter.connect(gain);
+  gain.connect(audioContext.destination);
+  source.start(now);
+  source.stop(now + duration);
+}
+
 function damageTarget(target, amount, point, weapon) {
   if (target.team === "ally") return;
   addImpact(point, weapon.type?.includes("Energy") ? 0x5be0ff : 0xffd36e);
+  const now = performance.now();
+  if (now - lastHitSound > 55) {
+    lastHitSound = now;
+    playSound("hit");
+  }
 
   if (target.range) {
     const size = target.group.userData.size || 1;
@@ -798,6 +1028,7 @@ function killEnemy(enemy) {
   player.coins += enemy.reward;
   player.ability = Math.min(100, player.ability + 34);
   blueScore += 1;
+  playSound("kill");
   showToast(`Enemy down +${enemy.reward} coins`);
   if (player.mode !== "range") spawnEnemy("enemy");
 }
@@ -1038,8 +1269,8 @@ function updateProjectiles(delta) {
     projectile.position.addScaledVector(data.velocity, delta);
     projectile.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), data.velocity.clone().normalize());
 
-    const candidates = player.mode === "range" ? rangeTargets.map((target) => ({ group: target, range: true, health: target.userData.health })) : enemies;
-    const hit = candidates.find((target) => projectile.position.distanceTo(target.group.position.clone().add(new THREE.Vector3(0, target.range ? 0 : 1, 0))) < (target.range ? target.group.userData.size * 0.7 : 0.85));
+    const candidates = getDamageCandidates();
+    const hit = candidates.find((target) => projectile.position.distanceTo(getTargetCenter(target)) < (target.range ? target.group.userData.size * 0.7 : 0.85));
     if (hit) {
       if (data.kind === "grenade") explode(projectile.position, data.weapon);
       else damageTarget(hit, data.weapon.damage, projectile.position.clone(), data.weapon);
@@ -1057,10 +1288,13 @@ function updateProjectiles(delta) {
 }
 
 function explode(point, weapon) {
+  playSound("explode");
   for (let i = 0; i < 18; i++) addImpact(point.clone().add(new THREE.Vector3(THREE.MathUtils.randFloatSpread(2), THREE.MathUtils.randFloat(0, 2), THREE.MathUtils.randFloatSpread(2))), 0xff7a36);
-  enemies.forEach((enemy) => {
-    const distance = enemy.group.position.distanceTo(point);
-    if (distance < 7) damageTarget(enemy, weapon.damage * (1 - distance / 8), enemy.group.position, weapon);
+  const radius = 8.5;
+  getDamageCandidates().forEach((target) => {
+    const targetPos = getTargetCenter(target);
+    const distance = targetPos.distanceTo(point);
+    if (distance < radius) damageTarget(target, Math.max(12, weapon.damage * (1 - distance / radius)), targetPos, weapon);
   });
 }
 
@@ -1146,7 +1380,7 @@ function updateUI() {
   ui.blueScore.textContent = blueScore;
   ui.redScore.textContent = redScore;
   ui.roundTimer.textContent = formatTime(roundTime);
-  ui.ability.textContent = player.ability >= 100 ? "Super Ready" : `${Math.round(player.ability)}%`;
+  ui.ability.textContent = player.ability >= 100 ? getSuperName(weapon) : `${Math.round(player.ability)}%`;
   ui.weaponClass.textContent = weapon.type;
   ui.weaponName.textContent = weapon.name;
   ui.ammoNow.textContent = weapon.currentAmmo;
