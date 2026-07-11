@@ -462,6 +462,119 @@ button.locked {
   z-index: 4;
 }
 
+.scope-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 4;
+  display: grid;
+  place-items: center;
+  pointer-events: none;
+  opacity: 0;
+  transform: scale(1.04);
+  transition:
+    opacity 140ms ease,
+    transform 140ms ease;
+}
+
+.scope-overlay.visible {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.scope-overlay::before {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background:
+    radial-gradient(circle at center, transparent 0 31vmin, rgba(0, 0, 0, 0.95) 31.4vmin 100%),
+    radial-gradient(circle at center, transparent 0 21vmin, rgba(0, 0, 0, 0.16) 31vmin);
+}
+
+.scope-overlay::after {
+  position: absolute;
+  inset: 0;
+  content: "";
+  background:
+    linear-gradient(90deg, rgba(0, 0, 0, 0.78), transparent 18%, transparent 82%, rgba(0, 0, 0, 0.78)),
+    linear-gradient(0deg, rgba(0, 0, 0, 0.78), transparent 18%, transparent 82%, rgba(0, 0, 0, 0.78));
+}
+
+.scope-view {
+  position: relative;
+  width: min(62vmin, 720px);
+  height: min(62vmin, 720px);
+  border: 3px solid rgba(10, 12, 12, 0.92);
+  border-radius: 50%;
+  box-shadow:
+    inset 0 0 0 2px rgba(255, 255, 255, 0.18),
+    inset 0 0 44px rgba(0, 0, 0, 0.75),
+    0 0 0 9999px rgba(0, 0, 0, 0.18);
+}
+
+.scope-line,
+.scope-ring,
+.scope-dot,
+.scope-ticks {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  display: block;
+  transform: translate(-50%, -50%);
+}
+
+.scope-line {
+  background: rgba(5, 8, 8, 0.92);
+  box-shadow: 0 0 2px rgba(255, 255, 255, 0.35);
+}
+
+.scope-line.horizontal {
+  width: 92%;
+  height: 2px;
+}
+
+.scope-line.vertical {
+  width: 2px;
+  height: 92%;
+}
+
+.scope-ring {
+  border: 1px solid rgba(5, 8, 8, 0.78);
+  border-radius: 50%;
+}
+
+.scope-ring.ring-one {
+  width: 16%;
+  height: 16%;
+}
+
+.scope-ring.ring-two {
+  width: 5%;
+  height: 5%;
+}
+
+.scope-dot {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: rgba(4, 6, 6, 0.95);
+}
+
+.scope-ticks.horizontal-ticks {
+  width: 58%;
+  height: 18px;
+  background: repeating-linear-gradient(90deg, transparent 0 34px, rgba(5, 8, 8, 0.84) 34px 36px, transparent 36px 70px);
+}
+
+.scope-ticks.vertical-ticks {
+  width: 18px;
+  height: 58%;
+  background: repeating-linear-gradient(0deg, transparent 0 34px, rgba(5, 8, 8, 0.84) 34px 36px, transparent 36px 70px);
+}
+
+.scope-active .crosshair {
+  opacity: 0;
+}
+
 .touch-ui {
   position: fixed;
   inset: 0;

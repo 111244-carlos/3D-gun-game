@@ -32,7 +32,7 @@ const modes = {
 
 const weapons = [
   { name: "Vanguard AR", type: "Assault Rifle", cost: 0, ammo: 32, damage: 18, rpm: 690, range: 92, speed: 150, spread: 0.012, recoil: 0.28, color: 0xf0c22e, slot: 0, fire: "hitscan" },
-  { name: "Longwatch", type: "Sniper", cost: 420, ammo: 5, damage: 92, rpm: 48, range: 190, speed: 240, spread: 0.002, recoil: 1.1, color: 0x46534b, slot: 1, fire: "hitscan", zoom: true },
+  { name: "Longwatch", type: "Sniper", cost: 420, ammo: 5, damage: 125, rpm: 48, range: 210, speed: 240, spread: 0.00045, recoil: 1.1, color: 0x46534b, slot: 1, fire: "hitscan", zoom: true },
   { name: "Pebble Sling", type: "Slingshot", cost: 0, ammo: 18, damage: 26, rpm: 96, range: 55, speed: 42, spread: 0.018, recoil: 0.18, color: 0x8f6a42, slot: 2, fire: "arc" },
   { name: "Tri-Burst", type: "Burst Rifle", cost: 0, ammo: 30, damage: 17, rpm: 760, range: 88, speed: 155, spread: 0.01, recoil: 0.34, color: 0x2c3744, slot: 3, fire: "burst" },
   { name: "Frag Grenade", type: "Grenade", cost: 220, ammo: 6, damage: 82, rpm: 58, range: 42, speed: 34, spread: 0.006, recoil: 0.35, color: 0x394332, fire: "grenade" },
