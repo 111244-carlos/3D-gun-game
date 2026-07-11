@@ -1164,8 +1164,8 @@ function buildSlots() {
 }
 
 function updateMovement(delta) {
-  const forward = new THREE.Vector3(Math.sin(player.yaw), 0, -Math.cos(player.yaw));
-  const right = new THREE.Vector3(Math.cos(player.yaw), 0, Math.sin(player.yaw));
+  const forward = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+  const right = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
   const move = new THREE.Vector3();
   if (keys.has("w")) move.add(forward);
   if (keys.has("s")) move.sub(forward);
