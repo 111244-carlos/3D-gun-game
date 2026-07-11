@@ -1197,7 +1197,8 @@ function updateMovement(delta) {
   camera.position.copy(player.position);
   camera.rotation.y = player.yaw + recoilYaw;
   camera.rotation.x = player.pitch + recoilPitch;
-  camera.fov = THREE.MathUtils.damp(camera.fov, player.aiming ? 48 : 68, 10, delta);
+  const scoped = player.aiming && weapons[activeWeaponId].zoom;
+  camera.fov = THREE.MathUtils.damp(camera.fov, scoped ? 28 : player.aiming ? 48 : 68, 10, delta);
   camera.updateProjectionMatrix();
 }
 
@@ -1344,6 +1345,7 @@ function updateWeaponView(delta) {
   recoilYaw = THREE.MathUtils.damp(recoilYaw, 0, 7, delta);
 
   const aimed = player.aiming && weapon.zoom;
+  weaponRoot.visible = !aimed;
   const targetX = aimed ? 0.16 : 0.62;
   const targetY = aimed ? -0.5 : -0.58;
   const targetZ = aimed ? -1.05 : -1.3;
