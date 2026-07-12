@@ -1310,6 +1310,7 @@ function updateEnemies(delta) {
 
   enemies.forEach((enemy) => {
     const toPlayer = player.position.clone().sub(enemy.group.position);
+    toPlayer.y = 0;
     const distance = toPlayer.length();
     const direction = toPlayer.normalize();
     const strafe = new THREE.Vector3(-direction.z, 0, direction.x).multiplyScalar(enemy.strafe);
@@ -1334,6 +1335,7 @@ function updateEnemies(delta) {
       enemy.group.lookAt(enemy.group.position.x + strafe.x, enemy.group.position.y, enemy.group.position.z + strafe.z);
     }
 
+    enemy.group.position.y = 0;
     animateWalk(enemy, delta);
   });
 }
