@@ -516,7 +516,6 @@ function spawnEnemy(forcedTeam, forcedPosition) {
   // Team colors with glowing accents
   const isAlly = team === "ally";
   const primaryColor = isAlly ? 0x4a9eff : 0xff3d3d;
-  const accentColor = isAlly ? 0x00d4ff : 0xff8800;
   const baseColor = isAlly ? 0x2c5aa0 : 0x8b2c2c;
 
   // Armor material
@@ -533,71 +532,75 @@ function spawnEnemy(forcedTeam, forcedPosition) {
     emissiveIntensity: 0.3
   });
 
-  // Torso/chest plate
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.9, 0.35), armorMat);
-  torso.position.y = 1.0;
-  torso.castShadow = true;
-  group.add(torso);
+  // Main body/torso (sits above the hips, legs handle the lower body)
+  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.42, 0.55, 6, 12), armorMat);
+  body.position.y = 1.25;
+  body.castShadow = true;
+  group.add(body);
 
-  // Chest accent panel
-  const chestAccent = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.5, 0.38), accentMat);
-  chestAccent.position.set(0, 1.0, 0.18);
+  // Chest accent panel (glowing stripe down center)
+  const chestAccent = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.5, 0.4), accentMat);
+  chestAccent.position.set(0, 1.25, 0.22);
   chestAccent.castShadow = true;
   group.add(chestAccent);
 
-  // Left arm
-  const leftArm = new THREE.Mesh(new THREE.CapsuleGeometry(0.15, 0.8, 4, 8), armorMat);
-  leftArm.position.set(-0.4, 1.1, 0);
-  leftArm.rotation.z = 0.3;
+  // Shoulder pivots let the arms swing during the walk cycle
+  const armLength = 0.75;
+  const armHalf = armLength / 2 + 0.14;
+  const shoulderY = 1.55;
+
+  const leftShoulder = new THREE.Group();
+  leftShoulder.position.set(-0.42, shoulderY, 0);
+  group.add(leftShoulder);
+  const leftArm = new THREE.Mesh(new THREE.CapsuleGeometry(0.14, armLength, 4, 8), armorMat);
+  leftArm.position.y = -armHalf;
   leftArm.castShadow = true;
-  group.add(leftArm);
+  leftShoulder.add(leftArm);
 
-  // Right arm with gun mount
-  const rightArm = new THREE.Mesh(new THREE.CapsuleGeometry(0.15, 0.8, 4, 8), armorMat);
-  rightArm.position.set(0.4, 1.1, 0);
-  rightArm.rotation.z = -0.3;
+  const rightShoulder = new THREE.Group();
+  rightShoulder.position.set(0.42, shoulderY, 0);
+  group.add(rightShoulder);
+  const rightArm = new THREE.Mesh(new THREE.CapsuleGeometry(0.14, armLength, 4, 8), armorMat);
+  rightArm.position.y = -armHalf;
   rightArm.castShadow = true;
-  group.add(rightArm);
+  rightShoulder.add(rightArm);
 
-  // Left leg
-  const leftLeg = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.85, 4, 8), armorMat);
-  leftLeg.position.set(-0.2, 0.35, 0);
+  // Hip pivots let the legs swing during the walk cycle
+  const legLength = 0.75;
+  const legHalf = legLength / 2 + 0.11;
+  const hipY = 0.86;
+
+  const leftHip = new THREE.Group();
+  leftHip.position.set(-0.18, hipY, 0);
+  group.add(leftHip);
+  const leftLeg = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, legLength, 4, 8), armorMat);
+  leftLeg.position.y = -legHalf;
   leftLeg.castShadow = true;
-  group.add(leftLeg);
+  leftHip.add(leftLeg);
 
-  // Right leg
-  const rightLeg = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.85, 4, 8), armorMat);
-  rightLeg.position.set(0.2, 0.35, 0);
+  const rightHip = new THREE.Group();
+  rightHip.position.set(0.18, hipY, 0);
+  group.add(rightHip);
+  const rightLeg = new THREE.Mesh(new THREE.CapsuleGeometry(0.11, legLength, 4, 8), armorMat);
+  rightLeg.position.y = -legHalf;
   rightLeg.castShadow = true;
-  group.add(rightLeg);
+  rightHip.add(rightLeg);
 
-  // Helmet/Head
-  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.28, 16, 12), armorMat);
-  helmet.position.y = 2.0;
+  // Helmet/Head with low-poly geometry
+  const helmet = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.35, 0.32), armorMat);
+  helmet.position.y = 2.05;
   helmet.castShadow = true;
   group.add(helmet);
 
-  // Helmet visor glow
-  const visor = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 8), accentMat);
-  visor.position.set(0, 2.0, 0.22);
+  // Helmet visor glow (front accent)
+  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.15, 0.04), accentMat);
+  visor.position.set(0, 2.05, 0.2);
   visor.castShadow = true;
   group.add(visor);
 
-  // Shoulder armor left
-  const shoulderLeft = new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 8), accentMat);
-  shoulderLeft.position.set(-0.42, 1.5, 0);
-  shoulderLeft.castShadow = true;
-  group.add(shoulderLeft);
-
-  // Shoulder armor right
-  const shoulderRight = new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 8), accentMat);
-  shoulderRight.position.set(0.42, 1.5, 0);
-  shoulderRight.castShadow = true;
-  group.add(shoulderRight);
-
-  // Gun
-  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 1.0), materials.steel);
-  gun.position.set(0.38, 1.25, -0.4);
+  // Gun (simplified)
+  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 0.85), materials.steel);
+  gun.position.set(0.36, 1.35, -0.36);
   gun.castShadow = true;
   group.add(gun);
 
@@ -624,7 +627,9 @@ function spawnEnemy(forcedTeam, forcedPosition) {
     speed: team === "ally" ? 3.8 : THREE.MathUtils.randFloat(3.1, 4.7),
     shootTimer: THREE.MathUtils.randFloat(1.5, 3.0),
     strafe: Math.random() > 0.5 ? 1 : -1,
-    reward: team === "ally" ? 0 : THREE.MathUtils.randInt(18, 34)
+    reward: team === "ally" ? 0 : THREE.MathUtils.randInt(18, 34),
+    walkPhase: Math.random() * Math.PI * 2,
+    limbs: { leftHip, rightHip, leftShoulder, rightShoulder, body }
   });
 }
 
@@ -1328,7 +1333,21 @@ function updateEnemies(delta) {
       enemy.group.position.addScaledVector(strafe, enemy.speed * 0.55 * delta);
       enemy.group.lookAt(enemy.group.position.x + strafe.x, enemy.group.position.y, enemy.group.position.z + strafe.z);
     }
+
+    animateWalk(enemy, delta);
   });
+}
+
+function animateWalk(enemy, delta) {
+  const limbs = enemy.limbs;
+  if (!limbs) return;
+  enemy.walkPhase += delta * enemy.speed * 2.4;
+  const swing = Math.sin(enemy.walkPhase) * 0.65;
+  limbs.leftHip.rotation.x = swing;
+  limbs.rightHip.rotation.x = -swing;
+  limbs.leftShoulder.rotation.x = -swing * 0.7;
+  limbs.rightShoulder.rotation.x = swing * 0.7;
+  limbs.body.position.y = 1.25 + Math.abs(Math.sin(enemy.walkPhase)) * 0.05;
 }
 
 function respawnPlayer() {
