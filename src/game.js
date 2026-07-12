@@ -512,18 +512,92 @@ function enterRange(weaponId) {
 function spawnEnemy(forcedTeam, forcedPosition) {
   const team = forcedTeam || (player.mode === "team" || player.mode === "ctf" ? (Math.random() > 0.72 ? "ally" : "enemy") : "enemy");
   const group = new THREE.Group();
-  const body = new THREE.Mesh(new THREE.CapsuleGeometry(0.48, 1.0, 6, 12), team === "ally" ? materials.ally : materials.enemy);
-  body.position.y = 1.0;
-  body.castShadow = true;
-  group.add(body);
 
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.32, 18, 12), new THREE.MeshStandardMaterial({ color: team === "ally" ? 0x8cc8f1 : 0xf0b0a8, roughness: 0.5 }));
-  head.position.y = 1.85;
-  head.castShadow = true;
-  group.add(head);
+  // Team colors with glowing accents
+  const isAlly = team === "ally";
+  const primaryColor = isAlly ? 0x4a9eff : 0xff3d3d;
+  const accentColor = isAlly ? 0x00d4ff : 0xff8800;
+  const baseColor = isAlly ? 0x2c5aa0 : 0x8b2c2c;
 
-  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.16, 0.16, 0.9), materials.steel);
-  gun.position.set(0.36, 1.2, -0.36);
+  // Armor material
+  const armorMat = new THREE.MeshStandardMaterial({
+    color: baseColor,
+    metalness: 0.6,
+    roughness: 0.4
+  });
+  const accentMat = new THREE.MeshStandardMaterial({
+    color: primaryColor,
+    metalness: 0.4,
+    roughness: 0.3,
+    emissive: primaryColor,
+    emissiveIntensity: 0.3
+  });
+
+  // Torso/chest plate
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.9, 0.35), armorMat);
+  torso.position.y = 1.0;
+  torso.castShadow = true;
+  group.add(torso);
+
+  // Chest accent panel
+  const chestAccent = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.5, 0.38), accentMat);
+  chestAccent.position.set(0, 1.0, 0.18);
+  chestAccent.castShadow = true;
+  group.add(chestAccent);
+
+  // Left arm
+  const leftArm = new THREE.Mesh(new THREE.CapsuleGeometry(0.15, 0.8, 4, 8), armorMat);
+  leftArm.position.set(-0.4, 1.1, 0);
+  leftArm.rotation.z = 0.3;
+  leftArm.castShadow = true;
+  group.add(leftArm);
+
+  // Right arm with gun mount
+  const rightArm = new THREE.Mesh(new THREE.CapsuleGeometry(0.15, 0.8, 4, 8), armorMat);
+  rightArm.position.set(0.4, 1.1, 0);
+  rightArm.rotation.z = -0.3;
+  rightArm.castShadow = true;
+  group.add(rightArm);
+
+  // Left leg
+  const leftLeg = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.85, 4, 8), armorMat);
+  leftLeg.position.set(-0.2, 0.35, 0);
+  leftLeg.castShadow = true;
+  group.add(leftLeg);
+
+  // Right leg
+  const rightLeg = new THREE.Mesh(new THREE.CapsuleGeometry(0.12, 0.85, 4, 8), armorMat);
+  rightLeg.position.set(0.2, 0.35, 0);
+  rightLeg.castShadow = true;
+  group.add(rightLeg);
+
+  // Helmet/Head
+  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.28, 16, 12), armorMat);
+  helmet.position.y = 2.0;
+  helmet.castShadow = true;
+  group.add(helmet);
+
+  // Helmet visor glow
+  const visor = new THREE.Mesh(new THREE.SphereGeometry(0.12, 12, 8), accentMat);
+  visor.position.set(0, 2.0, 0.22);
+  visor.castShadow = true;
+  group.add(visor);
+
+  // Shoulder armor left
+  const shoulderLeft = new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 8), accentMat);
+  shoulderLeft.position.set(-0.42, 1.5, 0);
+  shoulderLeft.castShadow = true;
+  group.add(shoulderLeft);
+
+  // Shoulder armor right
+  const shoulderRight = new THREE.Mesh(new THREE.SphereGeometry(0.18, 10, 8), accentMat);
+  shoulderRight.position.set(0.42, 1.5, 0);
+  shoulderRight.castShadow = true;
+  group.add(shoulderRight);
+
+  // Gun
+  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 1.0), materials.steel);
+  gun.position.set(0.38, 1.25, -0.4);
   gun.castShadow = true;
   group.add(gun);
 
