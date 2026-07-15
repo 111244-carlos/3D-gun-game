@@ -39,8 +39,8 @@ const weapons = [
   { name: "Jump Pad", type: "Jump Pad", cost: 140, ammo: 3, damage: 0, rpm: 80, range: 18, speed: 0, spread: 0, recoil: 0.1, color: 0x279e90, fire: "pad" },
   { name: "Ranger Bow", type: "Bow", cost: 260, ammo: 14, damage: 54, rpm: 90, range: 85, speed: 74, spread: 0.006, recoil: 0.2, color: 0x6d5133, fire: "arrow" },
   { name: "Steel Crossbow", type: "Crossbow", cost: 330, ammo: 8, damage: 72, rpm: 72, range: 105, speed: 96, spread: 0.004, recoil: 0.3, color: 0x45494b, fire: "bolt" },
-  { name: "Volt Lance", type: "Energy Rifle", cost: 520, ammo: 40, damage: 22, rpm: 620, range: 115, speed: 190, spread: 0.006, recoil: 0.17, color: 0x2e6d8f, fire: "energy" },
-  { name: "Pulse Pistol", type: "Energy Pistol", cost: 0, ammo: 18, damage: 28, rpm: 360, range: 72, speed: 135, spread: 0.011, recoil: 0.32, color: 0x3979a0, fire: "energy" },
+  { name: "Volt Lance", type: "Energy Rifle", cost: 520, ammo: Infinity, damage: 22, rpm: 620, range: 115, speed: 190, spread: 0.006, recoil: 0.17, color: 0x2e6d8f, fire: "energy" },
+  { name: "Pulse Pistol", type: "Energy Pistol", cost: 0, ammo: Infinity, damage: 28, rpm: 360, range: 72, speed: 135, spread: 0.011, recoil: 0.32, color: 0x3979a0, fire: "energy" },
   { name: "Ember Hose", type: "Flamethrower", cost: 650, ammo: 90, damage: 7, rpm: 920, range: 22, speed: 35, spread: 0.045, recoil: 0.05, color: 0x8c3f24, fire: "flame" },
   { name: "Storm LMG", type: "Heavy Rifle", cost: 720, ammo: 80, damage: 19, rpm: 820, range: 98, speed: 150, spread: 0.019, recoil: 0.46, color: 0x424b3c, fire: "hitscan" }
 ].map((weapon, index) => ({
