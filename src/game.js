@@ -50,6 +50,10 @@ const weapons = [
   currentAmmo: weapon.ammo
 }));
 
+const SLIDE_DURATION = 0.55;
+const SLIDE_COOLDOWN = 0.4;
+const SLIDE_DIP = 0.45;
+
 const player = {
   position: new THREE.Vector3(0, 1.7, 16),
   velocity: new THREE.Vector3(),
@@ -66,7 +70,12 @@ const player = {
   activeSlot: 0,
   selectedWeapon: 0,
   slots: [0, 2, 3, 9],
-  mode: "team"
+  mode: "team",
+  sliding: false,
+  slideTimer: 0,
+  slideCooldown: 0,
+  slideDir: new THREE.Vector3(),
+  slideVisual: 0
 };
 
 const ui = {
@@ -396,6 +405,7 @@ function onKeyDown(event) {
   if (key === "e" && player.ability >= 100) useAbility();
   if (key === "r") reloadWeapon();
   if (["1", "2", "3", "4"].includes(key)) equipSlot(Number(key) - 1);
+  if (key === "shift" && !event.repeat) startSlide();
 }
 
 function onPointerMove(event) {
@@ -457,8 +467,34 @@ document.addEventListener("pointerlockchange", () => {
 
 function jump() {
   if (!player.onGround) return;
+  if (player.sliding) endSlide();
   player.velocity.y = 8.2;
   player.onGround = false;
+}
+
+function startSlide() {
+  if (!player.onGround || player.sliding || player.slideCooldown > 0) return;
+  const forward = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+  const right = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
+  const move = new THREE.Vector3();
+  if (keys.has("w")) move.add(forward);
+  if (keys.has("s")) move.sub(forward);
+  if (keys.has("d")) move.add(right);
+  if (keys.has("a")) move.sub(right);
+  if (move.lengthSq() === 0) return;
+  move.normalize();
+
+  player.sliding = true;
+  player.slideTimer = SLIDE_DURATION;
+  player.slideDir.copy(move);
+  ui.status.textContent = "Sliding";
+  playSound("hit");
+}
+
+function endSlide() {
+  player.sliding = false;
+  player.slideTimer = 0;
+  player.slideCooldown = SLIDE_COOLDOWN;
 }
 
 function setMode(mode) {
@@ -473,6 +509,9 @@ function setMode(mode) {
   rangeRoot.visible = false;
   player.position.set(0, player.height, 18);
   player.velocity.set(0, 0, 0);
+  player.sliding = false;
+  player.slideTimer = 0;
+  player.slideVisual = 0;
   enemies.splice(0).forEach((enemy) => {
     enemy.label?.remove();
     enemy.group.removeFromParent();
@@ -629,7 +668,11 @@ function spawnEnemy(forcedTeam, forcedPosition) {
     strafe: Math.random() > 0.5 ? 1 : -1,
     reward: team === "ally" ? 0 : THREE.MathUtils.randInt(18, 34),
     walkPhase: Math.random() * Math.PI * 2,
-    limbs: { leftHip, rightHip, leftShoulder, rightShoulder, body }
+    limbs: { leftHip, rightHip, leftShoulder, rightShoulder, body },
+    sliding: false,
+    slideTimer: 0,
+    slideCooldown: THREE.MathUtils.randFloat(1.5, 4),
+    slideDir: new THREE.Vector3()
   });
 }
 
@@ -1257,9 +1300,20 @@ function updateMovement(delta) {
   if (keys.has("a")) move.sub(right);
   if (move.lengthSq() > 0) move.normalize();
 
-  const speed = player.aiming ? 5.1 : 8.2;
-  player.velocity.x = THREE.MathUtils.damp(player.velocity.x, move.x * speed, 12, delta);
-  player.velocity.z = THREE.MathUtils.damp(player.velocity.z, move.z * speed, 12, delta);
+  if (player.slideCooldown > 0) player.slideCooldown -= delta;
+
+  if (player.sliding) {
+    player.slideTimer -= delta;
+    const slideProgress = Math.max(player.slideTimer / SLIDE_DURATION, 0);
+    const slideSpeed = THREE.MathUtils.lerp(8.2, 15.5, slideProgress);
+    player.velocity.x = THREE.MathUtils.damp(player.velocity.x, player.slideDir.x * slideSpeed, 14, delta);
+    player.velocity.z = THREE.MathUtils.damp(player.velocity.z, player.slideDir.z * slideSpeed, 14, delta);
+    if (player.slideTimer <= 0 || !player.onGround) endSlide();
+  } else {
+    const speed = player.aiming ? 5.1 : 8.2;
+    player.velocity.x = THREE.MathUtils.damp(player.velocity.x, move.x * speed, 12, delta);
+    player.velocity.z = THREE.MathUtils.damp(player.velocity.z, move.z * speed, 12, delta);
+  }
   player.velocity.y -= 22 * delta;
   player.position.addScaledVector(player.velocity, delta);
 
@@ -1273,7 +1327,10 @@ function updateMovement(delta) {
   player.position.z = THREE.MathUtils.clamp(player.position.z, -54, player.mode === "range" ? 12 : 54);
   resolveColliders();
 
+  player.slideVisual = THREE.MathUtils.damp(player.slideVisual, player.sliding ? SLIDE_DIP : 0, 10, delta);
+
   camera.position.copy(player.position);
+  camera.position.y -= player.slideVisual;
   camera.rotation.y = player.yaw + recoilYaw;
   camera.rotation.x = player.pitch + recoilPitch;
   const scoped = player.aiming && weapons[activeWeaponId].zoom;
@@ -1314,10 +1371,26 @@ function updateEnemies(delta) {
     const distance = toPlayer.length();
     const direction = toPlayer.normalize();
     const strafe = new THREE.Vector3(-direction.z, 0, direction.x).multiplyScalar(enemy.strafe);
+    const desired = enemy.team === "enemy" ? (distance > 12 ? direction : strafe) : strafe;
+
+    enemy.slideCooldown -= delta;
+    if (enemy.sliding) {
+      enemy.slideTimer -= delta;
+      if (enemy.slideTimer <= 0) {
+        enemy.sliding = false;
+        enemy.slideCooldown = THREE.MathUtils.randFloat(3, 6);
+      }
+    } else if (enemy.slideCooldown <= 0 && distance > 6 && distance < 40) {
+      enemy.sliding = true;
+      enemy.slideTimer = 0.45;
+      enemy.slideDir.copy(desired);
+    }
+
+    const moveDir = enemy.sliding ? enemy.slideDir : desired;
+    const slideMultiplier = enemy.sliding ? 2.3 : 1;
 
     if (enemy.team === "enemy") {
-      const desired = distance > 12 ? direction : strafe;
-      enemy.group.position.addScaledVector(desired, enemy.speed * delta);
+      enemy.group.position.addScaledVector(moveDir, enemy.speed * slideMultiplier * delta);
       enemy.group.lookAt(player.position.x, enemy.group.position.y, player.position.z);
       enemy.shootTimer -= delta;
       if (enemy.shootTimer <= 0 && distance < 32) {
@@ -1331,8 +1404,8 @@ function updateEnemies(delta) {
         if (player.health <= 0) respawnPlayer();
       }
     } else {
-      enemy.group.position.addScaledVector(strafe, enemy.speed * 0.55 * delta);
-      enemy.group.lookAt(enemy.group.position.x + strafe.x, enemy.group.position.y, enemy.group.position.z + strafe.z);
+      enemy.group.position.addScaledVector(moveDir, enemy.speed * 0.55 * slideMultiplier * delta);
+      enemy.group.lookAt(enemy.group.position.x + moveDir.x, enemy.group.position.y, enemy.group.position.z + moveDir.z);
     }
 
     enemy.group.position.y = 0;
@@ -1343,6 +1416,16 @@ function updateEnemies(delta) {
 function animateWalk(enemy, delta) {
   const limbs = enemy.limbs;
   if (!limbs) return;
+
+  if (enemy.sliding) {
+    limbs.leftHip.rotation.x = THREE.MathUtils.damp(limbs.leftHip.rotation.x, -1.0, 12, delta);
+    limbs.rightHip.rotation.x = THREE.MathUtils.damp(limbs.rightHip.rotation.x, -1.0, 12, delta);
+    limbs.leftShoulder.rotation.x = THREE.MathUtils.damp(limbs.leftShoulder.rotation.x, 0.55, 12, delta);
+    limbs.rightShoulder.rotation.x = THREE.MathUtils.damp(limbs.rightShoulder.rotation.x, 0.55, 12, delta);
+    limbs.body.position.y = THREE.MathUtils.damp(limbs.body.position.y, 0.92, 12, delta);
+    return;
+  }
+
   enemy.walkPhase += delta * enemy.speed * 2.4;
   const swing = Math.sin(enemy.walkPhase) * 0.65;
   limbs.leftHip.rotation.x = swing;
@@ -1358,6 +1441,9 @@ function respawnPlayer() {
   player.position.set(0, player.height, 18);
   player.velocity.set(0, 0, 0);
   player.coins = Math.max(0, player.coins - 25);
+  player.sliding = false;
+  player.slideTimer = 0;
+  player.slideVisual = 0;
   showToast("Respawned. Lost 25 coins.");
 }
 
