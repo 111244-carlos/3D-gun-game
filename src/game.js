@@ -22,6 +22,8 @@ const particles = [];
 const casings = [];
 const rangeTargets = [];
 const colliders = [];
+const c4Charges = [];
+const NO_MAGAZINE_TYPES = ["Grenade", "Jump Pad", "Bow", "Slingshot", "Melee", "Shield", "Explosive"];
 
 const modes = {
   team: "Team Battle",
@@ -33,7 +35,7 @@ const modes = {
 const weapons = [
   { name: "Vanguard AR", type: "Assault Rifle", cost: 0, ammo: 32, damage: 18, rpm: 690, range: 92, speed: 150, spread: 0.012, recoil: 0.28, color: 0xf0c22e, slot: 0, fire: "hitscan" },
   { name: "Longwatch", type: "Sniper", cost: 420, ammo: 5, damage: 125, rpm: 48, range: 210, speed: 240, spread: 0.00045, recoil: 1.1, color: 0x46534b, slot: 1, fire: "hitscan", zoom: true },
-  { name: "Pebble Sling", type: "Slingshot", cost: 0, ammo: 18, damage: 26, rpm: 96, range: 55, speed: 42, spread: 0.018, recoil: 0.18, color: 0x8f6a42, slot: 2, fire: "arc" },
+  { name: "Pebble Sling", type: "Slingshot", cost: 0, ammo: 18, damage: 26, rpm: 705, range: 55, speed: 58, spread: 0.018, recoil: 0.18, color: 0x8f6a42, slot: 2, fire: "arc" },
   { name: "Tri-Burst", type: "Burst Rifle", cost: 0, ammo: 30, damage: 17, rpm: 760, range: 88, speed: 155, spread: 0.01, recoil: 0.34, color: 0x2c3744, slot: 3, fire: "burst" },
   { name: "Frag Grenade", type: "Grenade", cost: 220, ammo: 6, damage: 82, rpm: 58, range: 42, speed: 34, spread: 0.006, recoil: 0.35, color: 0x394332, fire: "grenade" },
   { name: "Jump Pad", type: "Jump Pad", cost: 140, ammo: 3, damage: 0, rpm: 80, range: 18, speed: 0, spread: 0, recoil: 0.1, color: 0x279e90, fire: "pad" },
@@ -42,7 +44,15 @@ const weapons = [
   { name: "Volt Lance", type: "Energy Rifle", cost: 520, ammo: Infinity, damage: 22, rpm: 620, range: 115, speed: 190, spread: 0.006, recoil: 0.17, color: 0x2e6d8f, fire: "energy" },
   { name: "Pulse Pistol", type: "Energy Pistol", cost: 0, ammo: Infinity, damage: 28, rpm: 360, range: 72, speed: 135, spread: 0.011, recoil: 0.32, color: 0x3979a0, fire: "energy" },
   { name: "Ember Hose", type: "Flamethrower", cost: 650, ammo: 90, damage: 7, rpm: 920, range: 22, speed: 35, spread: 0.045, recoil: 0.05, color: 0x8c3f24, fire: "flame" },
-  { name: "Storm LMG", type: "Heavy Rifle", cost: 720, ammo: 80, damage: 19, rpm: 820, range: 98, speed: 150, spread: 0.019, recoil: 0.46, color: 0x424b3c, fire: "hitscan" }
+  { name: "Storm LMG", type: "Heavy Rifle", cost: 720, ammo: 80, damage: 19, rpm: 820, range: 98, speed: 150, spread: 0.019, recoil: 0.46, color: 0x424b3c, fire: "hitscan" },
+  { name: "Rampage Minigun", type: "Minigun", cost: 900, ammo: 150, damage: 14, rpm: 1500, range: 95, speed: 165, spread: 0.03, recoil: 0.5, color: 0x3a3f33, fire: "hitscan" },
+  { name: "Combat Uzi", type: "Uzi", cost: 150, ammo: 32, damage: 13, rpm: 900, range: 45, speed: 140, spread: 0.03, recoil: 0.22, color: 0x25272b, fire: "hitscan" },
+  { name: "Rapid SMG", type: "SMG", cost: 260, ammo: 35, damage: 15, rpm: 780, range: 58, speed: 145, spread: 0.024, recoil: 0.24, color: 0x555f52, fire: "hitscan" },
+  { name: "Scatter Shotgun", type: "Shotgun", cost: 300, ammo: 6, damage: 11, rpm: 78, range: 30, speed: 150, spread: 0.05, recoil: 0.6, color: 0x6b4423, fire: "shotgun", pellets: 8 },
+  { name: "Combat Knife", type: "Melee", cost: 0, ammo: 1, damage: 45, rpm: 300, range: 2.4, speed: 0, spread: 0, recoil: 0.05, color: 0xcfd4d6, fire: "melee" },
+  { name: "Katana", type: "Melee", cost: 480, ammo: 1, damage: 85, rpm: 140, range: 2.8, speed: 0, spread: 0, recoil: 0.08, color: 0xe6e6e6, fire: "melee" },
+  { name: "Riot Shield", type: "Shield", cost: 260, ammo: 1, damage: 12, rpm: 110, range: 2.0, speed: 0, spread: 0, recoil: 0.05, color: 0x384252, fire: "shield", block: 0.85 },
+  { name: "C-4 Charge", type: "Explosive", cost: 380, ammo: 4, damage: 140, rpm: 90, range: 20, speed: 30, spread: 0, recoil: 0.2, color: 0x35401f, fire: "c4", blastRadius: 9 }
 ].map((weapon, index) => ({
   ...weapon,
   id: index,
@@ -433,7 +443,9 @@ function onPointerDown(event) {
   if (event.button === 2) {
     event.preventDefault();
     const weapon = weapons[activeWeaponId];
-    if (weapon.zoom) {
+    if (weapon.fire === "c4" && c4Charges.length > 0) {
+      detonateC4();
+    } else if (weapon.zoom) {
       player.aiming = true;
     } else if (player.ability >= 100 && !player.aiming) {
       useAbility();
@@ -689,7 +701,20 @@ function buildWeapon(weapon) {
     emissive: weapon.type.includes("Energy") ? new THREE.Color(0x063344) : new THREE.Color(0x000000)
   });
 
-  const bodyLength = weapon.type === "Pistol" || weapon.type === "Energy Pistol" ? 0.9 : weapon.type === "Grenade" ? 0.45 : 1.45;
+  if (weapon.type === "Melee") {
+    buildMeleeWeapon(weapon);
+    return;
+  }
+  if (weapon.type === "Shield") {
+    buildShieldWeapon(weapon, gunMat);
+    return;
+  }
+
+  const bodyLength = ["Pistol", "Energy Pistol", "Uzi", "SMG"].includes(weapon.type)
+    ? 0.85
+    : weapon.type === "Grenade" || weapon.type === "Explosive"
+      ? 0.45
+      : 1.45;
   const body = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.34, bodyLength), gunMat);
   body.position.set(0, 0, -0.42);
   body.castShadow = true;
@@ -704,6 +729,13 @@ function buildWeapon(weapon) {
     pad.rotation.x = Math.PI * 0.5;
     pad.position.set(0, -0.08, -0.86);
     weaponRoot.add(pad);
+  } else if (weapon.fire === "c4") {
+    const brick = new THREE.Mesh(new THREE.BoxGeometry(0.34, 0.22, 0.5), gunMat);
+    brick.position.set(0, -0.02, -0.7);
+    weaponRoot.add(brick);
+    const blinker = new THREE.Mesh(new THREE.SphereGeometry(0.045, 8, 8), new THREE.MeshBasicMaterial({ color: 0xff2a2a }));
+    blinker.position.set(0, 0.14, -0.68);
+    weaponRoot.add(blinker);
   } else if (weapon.type === "Bow" || weapon.type === "Crossbow" || weapon.type === "Slingshot") {
     const limb = new THREE.Mesh(new THREE.TorusGeometry(0.62, 0.025, 8, 32, Math.PI), gunMat);
     limb.rotation.set(Math.PI * 0.5, 0, Math.PI * 0.5);
@@ -712,8 +744,19 @@ function buildWeapon(weapon) {
     const string = new THREE.Mesh(new THREE.BoxGeometry(0.03, 1.1, 0.03), materials.rubber);
     string.position.set(0, 0.02, -1.12);
     weaponRoot.add(string);
+  } else if (weapon.type === "Minigun") {
+    const barrelCluster = new THREE.Group();
+    for (let i = 0; i < 6; i++) {
+      const angle = (i / 6) * Math.PI * 2;
+      const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 1.35, 12), materials.steel);
+      barrel.rotation.x = Math.PI * 0.5;
+      barrel.position.set(Math.cos(angle) * 0.11, 0.04 + Math.sin(angle) * 0.11, -1.75);
+      barrelCluster.add(barrel);
+    }
+    barrelCluster.name = "muzzle";
+    weaponRoot.add(barrelCluster);
   } else {
-    const barrelLength = weapon.type === "Sniper" ? 2.1 : weapon.type === "Flamethrower" ? 1.5 : 1.25;
+    const barrelLength = weapon.type === "Sniper" ? 2.1 : weapon.type === "Flamethrower" ? 1.5 : weapon.type === "Shotgun" ? 0.85 : ["Uzi", "SMG"].includes(weapon.type) ? 0.95 : 1.25;
     const barrel = new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.065, barrelLength, 22), materials.steel);
     barrel.rotation.x = Math.PI * 0.5;
     barrel.position.set(0, 0.04, -barrelLength * 0.5 - 1.05);
@@ -732,7 +775,7 @@ function buildWeapon(weapon) {
   grip.rotation.x = -0.22;
   weaponRoot.add(grip);
 
-  if (!["Grenade", "Jump Pad", "Bow", "Slingshot"].includes(weapon.type)) {
+  if (!NO_MAGAZINE_TYPES.includes(weapon.type)) {
     const mag = new THREE.Mesh(new THREE.BoxGeometry(0.28, weapon.type === "Heavy Rifle" ? 0.82 : 0.58, 0.25), materials.rubber);
     mag.position.set(0, -0.43, -0.52);
     mag.rotation.x = 0.06;
@@ -752,24 +795,71 @@ function buildWeapon(weapon) {
   weaponRoot.add(light);
 }
 
+function buildMeleeWeapon(weapon) {
+  const isKatana = weapon.name === "Katana";
+  const bladeLength = isKatana ? 1.3 : 0.5;
+  const bladeMat = new THREE.MeshStandardMaterial({ color: weapon.color, metalness: 0.85, roughness: 0.18 });
+
+  const blade = new THREE.Mesh(new THREE.BoxGeometry(isKatana ? 0.05 : 0.07, isKatana ? 0.05 : 0.09, bladeLength), bladeMat);
+  blade.position.set(0.12, -0.1, -0.75 - bladeLength * 0.5);
+  blade.rotation.x = -0.1;
+  blade.castShadow = true;
+  weaponRoot.add(blade);
+
+  const guard = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.05, 0.05), materials.steel);
+  guard.position.set(0.12, -0.1, -0.72);
+  weaponRoot.add(guard);
+
+  const handle = new THREE.Mesh(new THREE.CylinderGeometry(0.035, 0.035, 0.3, 12), materials.rubber);
+  handle.rotation.x = Math.PI * 0.5;
+  handle.position.set(0.12, -0.1, -0.55);
+  weaponRoot.add(handle);
+
+  const light = new THREE.PointLight(0xffffff, 0, 4, 2);
+  light.position.set(0.12, -0.1, -1.2);
+  light.name = "muzzleLight";
+  weaponRoot.add(light);
+}
+
+function buildShieldWeapon(weapon, gunMat) {
+  const shield = new THREE.Mesh(new THREE.BoxGeometry(0.72, 1.0, 0.08), gunMat);
+  shield.position.set(0.08, -0.15, -0.75);
+  shield.castShadow = true;
+  weaponRoot.add(shield);
+
+  const rim = new THREE.Mesh(new THREE.TorusGeometry(0.4, 0.03, 8, 24), materials.steel);
+  rim.position.set(0.08, -0.15, -0.71);
+  weaponRoot.add(rim);
+
+  const handle = new THREE.Mesh(new THREE.BoxGeometry(0.12, 0.4, 0.1), materials.rubber);
+  handle.position.set(0.08, -0.15, -0.35);
+  weaponRoot.add(handle);
+
+  const light = new THREE.PointLight(0xffffff, 0, 4, 2);
+  light.position.set(0.08, -0.15, -1.1);
+  light.name = "muzzleLight";
+  weaponRoot.add(light);
+}
+
 function fireWeapon() {
   const weapon = weapons[activeWeaponId];
   const now = performance.now();
   const delay = 60000 / weapon.rpm;
   if (isReloading || now - lastShot < delay) return;
-  if (weapon.currentAmmo <= 0) {
+  const usesAmmo = weapon.fire !== "melee" && weapon.fire !== "shield";
+  if (usesAmmo && weapon.currentAmmo <= 0) {
     showToast("Empty. Reload with R.");
     reloadWeapon();
     return;
   }
 
   lastShot = now;
-  weapon.currentAmmo -= 1;
+  if (usesAmmo) weapon.currentAmmo -= 1;
   recoilPitch += weapon.recoil * 0.015;
   recoilYaw += THREE.MathUtils.randFloatSpread(weapon.recoil * 0.01);
   weaponRoot.position.z += weapon.recoil * 0.08;
   weaponRoot.rotation.x -= weapon.recoil * 0.035;
-  flashWeapon(weapon);
+  if (weapon.fire !== "melee" && weapon.fire !== "shield") flashWeapon(weapon);
   playSound(weapon.fire);
 
   if (weapon.fire === "burst") {
@@ -778,17 +868,23 @@ function fireWeapon() {
     shootHitscan(weapon);
   } else if (weapon.fire === "hitscan" || weapon.fire === "energy") {
     shootHitscan(weapon);
+  } else if (weapon.fire === "shotgun") {
+    shootShotgun(weapon);
+  } else if (weapon.fire === "melee" || weapon.fire === "shield") {
+    meleeAttack(weapon);
   } else if (weapon.fire === "flame") {
     shootFlame(weapon);
   } else if (weapon.fire === "grenade") {
     launchProjectile(weapon, "grenade");
   } else if (weapon.fire === "pad") {
     deployJumpPad();
+  } else if (weapon.fire === "c4") {
+    placeC4(weapon);
   } else {
     launchProjectile(weapon, weapon.fire);
   }
 
-  if (!["Grenade", "Jump Pad", "Bow", "Slingshot"].includes(weapon.type)) createCasing();
+  if (!NO_MAGAZINE_TYPES.includes(weapon.type)) createCasing();
   ui.status.textContent = `${weapon.name} fired`;
   updateUI();
 }
@@ -813,6 +909,47 @@ function shootHitscan(weapon) {
 
   drawTracer(origin, origin.clone().addScaledVector(direction, closest?.distance || weapon.range), weapon.fire === "energy" ? 0x5be0ff : 0xffd36e);
   if (closest) damageTarget(closest.target, weapon.damage, closest.point, weapon);
+}
+
+function shootShotgun(weapon) {
+  const origin = camera.position.clone();
+  const pellets = weapon.pellets || 8;
+  const candidates = getDamageCandidates();
+
+  for (let i = 0; i < pellets; i++) {
+    const direction = getAimDirection(weapon.spread * (player.aiming ? 0.5 : 1));
+    let closest = null;
+    candidates.forEach((target) => {
+      const targetPos = target.group.position.clone().add(new THREE.Vector3(0, target.range ? 0 : 1.05, 0));
+      const toTarget = targetPos.clone().sub(origin);
+      const forwardDistance = toTarget.dot(direction);
+      if (forwardDistance < 0 || forwardDistance > weapon.range) return;
+      const miss = targetPos.distanceTo(origin.clone().addScaledVector(direction, forwardDistance));
+      const hitRadius = target.range ? target.group.userData.size * 0.68 : 0.82;
+      if (miss <= hitRadius && (!closest || forwardDistance < closest.distance)) {
+        closest = { target, distance: forwardDistance, point: origin.clone().addScaledVector(direction, forwardDistance) };
+      }
+    });
+    if (i === 0) drawTracer(origin, origin.clone().addScaledVector(direction, closest?.distance || weapon.range), 0xffd36e);
+    if (closest) damageTarget(closest.target, weapon.damage, closest.point, weapon);
+  }
+}
+
+function meleeAttack(weapon) {
+  const forward = new THREE.Vector3(0, 0, -1).applyEuler(camera.rotation).normalize();
+  const origin = camera.position.clone();
+  let hit = null;
+
+  getDamageCandidates().forEach((target) => {
+    const targetPos = getTargetCenter(target);
+    const toTarget = targetPos.clone().sub(origin);
+    const distance = toTarget.length();
+    if (distance > weapon.range) return;
+    const angle = toTarget.normalize().dot(forward);
+    if (angle > 0.55 && (!hit || distance < hit.distance)) hit = { target, distance, point: targetPos };
+  });
+
+  if (hit) damageTarget(hit.target, weapon.damage, hit.point, weapon);
 }
 
 function shootFlame(weapon) {
@@ -867,6 +1004,33 @@ function deployJumpPad() {
   scene.add(pad);
   particles.push(pad);
   showToast("Jump pad deployed");
+}
+
+function placeC4(weapon) {
+  const direction = getAimDirection(0);
+  const charge = new THREE.Mesh(
+    new THREE.BoxGeometry(0.32, 0.18, 0.32),
+    new THREE.MeshStandardMaterial({ color: weapon.color, metalness: 0.4, roughness: 0.5, emissive: new THREE.Color(0x220000) })
+  );
+  const point = player.position.clone().addScaledVector(direction, Math.min(weapon.range, 8));
+  point.y = 0.14;
+  charge.position.copy(point);
+  scene.add(charge);
+  c4Charges.push({ mesh: charge, position: point.clone(), weapon });
+  showToast(c4Charges.length >= weapon.ammo ? "Charges armed. Right-click to detonate." : "C-4 placed");
+}
+
+function detonateC4() {
+  if (c4Charges.length === 0) return;
+  const weapon = c4Charges[0].weapon;
+  c4Charges.forEach((charge) => {
+    superExplosionAt(charge.position, weapon.blastRadius || 9, weapon.damage, { ...weapon, name: "C-4 Detonation" }, 0xff9a3c);
+    charge.mesh.removeFromParent();
+  });
+  c4Charges.length = 0;
+  weapon.currentAmmo = weapon.ammo;
+  updateUI();
+  showToast("C-4 detonated");
 }
 
 function useAbility() {
@@ -1063,6 +1227,10 @@ function playSound(kind) {
     grenade: () => playTone(115, 0.12, "triangle", 0.06, -0.35),
     flame: () => playNoise(0.11, 0.07, 940),
     pad: () => playTone(360, 0.12, "sine", 0.06, 1.1),
+    shotgun: () => playNoise(0.09, 0.12, 650),
+    melee: () => playTone(180, 0.05, "sawtooth", 0.05, -0.5),
+    shield: () => playTone(140, 0.06, "square", 0.05, -0.3),
+    c4: () => playTone(200, 0.05, "triangle", 0.04, -0.2),
     explode: () => playNoise(0.45, 0.18, 170),
     hit: () => playTone(95, 0.035, "square", 0.035, -0.2),
     kill: () => {
@@ -1395,7 +1563,10 @@ function updateEnemies(delta) {
       enemy.shootTimer -= delta;
       if (enemy.shootTimer <= 0 && distance < 32) {
         enemy.shootTimer = THREE.MathUtils.randFloat(1.8, 3.2);
-        const damage = THREE.MathUtils.randInt(2, 5);
+        const rawDamage = THREE.MathUtils.randInt(2, 5);
+        const heldWeapon = weapons[activeWeaponId];
+        const blocking = heldWeapon.fire === "shield" && player.aiming;
+        const damage = blocking ? rawDamage * (1 - heldWeapon.block) : rawDamage;
         const armorHit = Math.min(player.armor, damage);
         player.armor -= armorHit;
         player.health = Math.max(0, player.health - (damage - armorHit));
