@@ -649,41 +649,70 @@ function spawnEnemy(forcedTeam, forcedPosition) {
   head.castShadow = true;
   group.add(head);
 
-  // Combat helmet: team-colored dome over the top of the head, leaving the face open
-  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.34, 20, 12, 0, Math.PI * 2, 0, Math.PI * 0.52), armorMat);
-  helmet.position.y = 2.2;
+  // Tactical FAST-style helmet: covers top, sides, and back of the head,
+  // tilted so the front rim sits above the eyes and the face stays open
+  const gearMat = new THREE.MeshStandardMaterial({ color: 0x2b2e28, metalness: 0.3, roughness: 0.6 });
+  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.37, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.55), armorMat);
+  helmet.position.set(0, 2.22, -0.02);
+  helmet.rotation.x = -0.28;
   helmet.castShadow = true;
   group.add(helmet);
 
-  // Helmet brim above the eyes
-  const brim = new THREE.Mesh(new THREE.CylinderGeometry(0.35, 0.35, 0.04, 20, 1, false, -Math.PI * 0.35, Math.PI * 0.7), armorMat);
-  brim.position.y = 2.26;
-  brim.castShadow = true;
-  group.add(brim);
+  // Accessory rails along each side of the helmet
+  const leftRail = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.07, 0.34), gearMat);
+  leftRail.position.set(-0.34, 2.2, 0.02);
+  group.add(leftRail);
+  const rightRail = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.07, 0.34), gearMat);
+  rightRail.position.set(0.34, 2.2, 0.02);
+  group.add(rightRail);
 
+  // Night-vision mount on the forehead
+  const nvgMount = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.06), gearMat);
+  nvgMount.position.set(0, 2.36, 0.3);
+  group.add(nvgMount);
+  const nvgLeft = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.16, 10), gearMat);
+  nvgLeft.rotation.x = Math.PI * 0.5;
+  nvgLeft.position.set(-0.06, 2.32, 0.42);
+  group.add(nvgLeft);
+  const nvgRight = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.16, 10), gearMat);
+  nvgRight.rotation.x = Math.PI * 0.5;
+  nvgRight.position.set(0.06, 2.32, 0.42);
+  group.add(nvgRight);
+
+  // Chin straps running down from the helmet sides
+  const leftStrap = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.24, 0.025), gearMat);
+  leftStrap.position.set(-0.26, 1.99, 0.06);
+  leftStrap.rotation.z = 0.25;
+  group.add(leftStrap);
+  const rightStrap = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.24, 0.025), gearMat);
+  rightStrap.position.set(0.26, 1.99, 0.06);
+  rightStrap.rotation.z = -0.25;
+  group.add(rightStrap);
+
+  // Face sits below the helmet's front rim
   const eyeMat = new THREE.MeshStandardMaterial({ color: 0x1c1c22, roughness: 0.35 });
   const leftEye = new THREE.Mesh(new THREE.SphereGeometry(0.045, 10, 8), eyeMat);
-  leftEye.position.set(-0.11, 2.23, 0.26);
+  leftEye.position.set(-0.11, 2.18, 0.27);
   group.add(leftEye);
   const rightEye = new THREE.Mesh(new THREE.SphereGeometry(0.045, 10, 8), eyeMat);
-  rightEye.position.set(0.11, 2.23, 0.26);
+  rightEye.position.set(0.11, 2.18, 0.27);
   group.add(rightEye);
 
   const noseMat = new THREE.MeshStandardMaterial({ color: 0xd9a87e, roughness: 0.7 });
   const nose = new THREE.Mesh(new THREE.SphereGeometry(0.05, 10, 8), noseMat);
-  nose.position.set(0, 2.15, 0.29);
+  nose.position.set(0, 2.09, 0.29);
   group.add(nose);
 
   const mouthMat = new THREE.MeshStandardMaterial({ color: 0x8f4a3d, roughness: 0.6 });
   const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.035, 0.03), mouthMat);
-  mouth.position.set(0, 2.05, 0.27);
+  mouth.position.set(0, 2.0, 0.27);
   group.add(mouth);
 
   const leftEar = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), skinMat);
-  leftEar.position.set(-0.29, 2.18, 0);
+  leftEar.position.set(-0.29, 2.13, 0);
   group.add(leftEar);
   const rightEar = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), skinMat);
-  rightEar.position.set(0.29, 2.18, 0);
+  rightEar.position.set(0.29, 2.13, 0);
   group.add(rightEar);
 
   // Gun held in front, barrel pointing forward (+Z, same way lookAt aims the model)
