@@ -637,23 +637,35 @@ function spawnEnemy(forcedTeam, forcedPosition) {
   rightLeg.castShadow = true;
   rightHip.add(rightLeg);
 
-  // Helmet/Head with low-poly geometry
-  const helmet = new THREE.Mesh(new THREE.BoxGeometry(0.35, 0.35, 0.32), armorMat);
-  helmet.position.y = 2.05;
+  // Neck connects torso and helmet
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.12, 0.18, 10), armorMat);
+  neck.position.y = 1.92;
+  group.add(neck);
+
+  // Helmet/Head — darker steel so it stands out from the body armor
+  const helmetMat = new THREE.MeshStandardMaterial({ color: 0x23272c, metalness: 0.75, roughness: 0.3 });
+  const helmet = new THREE.Mesh(new THREE.BoxGeometry(0.4, 0.38, 0.36), helmetMat);
+  helmet.position.y = 2.12;
   helmet.castShadow = true;
   group.add(helmet);
 
-  // Helmet visor glow (front accent)
-  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.28, 0.15, 0.04), accentMat);
-  visor.position.set(0, 2.05, 0.2);
+  // Helmet visor glow (front accent; +Z is the model's facing direction)
+  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.14, 0.05), accentMat);
+  visor.position.set(0, 2.13, 0.2);
   visor.castShadow = true;
   group.add(visor);
 
-  // Gun (simplified)
-  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.14, 0.85), materials.steel);
-  gun.position.set(0.36, 1.35, -0.36);
+  // Gun held in front, barrel pointing forward (+Z, same way lookAt aims the model)
+  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.16, 0.7), materials.steel);
+  gun.position.set(0.3, 1.35, 0.5);
   gun.castShadow = true;
   group.add(gun);
+
+  const gunBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.05, 0.55, 12), materials.steel);
+  gunBarrel.rotation.x = Math.PI * 0.5;
+  gunBarrel.position.set(0.3, 1.39, 1.05);
+  gunBarrel.castShadow = true;
+  group.add(gunBarrel);
 
   let pos = forcedPosition;
   if (!pos) {
@@ -1571,6 +1583,9 @@ function updateEnemies(delta) {
         player.armor -= armorHit;
         player.health = Math.max(0, player.health - (damage - armorHit));
         if (damage > 0) redScore += Math.random() > 0.82 ? 1 : 0;
+        const muzzleWorld = enemy.group.localToWorld(new THREE.Vector3(0.3, 1.39, 1.32));
+        const aimPoint = player.position.clone().add(new THREE.Vector3(THREE.MathUtils.randFloatSpread(0.5), THREE.MathUtils.randFloatSpread(0.5) - 0.25, THREE.MathUtils.randFloatSpread(0.5)));
+        drawTracer(muzzleWorld, aimPoint, 0xff6a4e);
         addImpact(player.position.clone().add(new THREE.Vector3(0, -0.4, 0)), 0xff5b4e);
         if (player.health <= 0) respawnPlayer();
       }
