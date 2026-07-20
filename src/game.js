@@ -637,95 +637,84 @@ function spawnEnemy(forcedTeam, forcedPosition) {
   rightLeg.castShadow = true;
   rightHip.add(rightLeg);
 
-  // Neck connects torso and head
-  const skinMat = new THREE.MeshStandardMaterial({ color: 0xf0c29a, roughness: 0.65 });
-  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.09, 0.11, 0.18, 10), skinMat);
-  neck.position.y = 1.92;
+  // Neck connects torso and the sealed helmet
+  const neck = new THREE.Mesh(new THREE.CylinderGeometry(0.11, 0.13, 0.16, 10), armorMat);
+  neck.position.y = 1.9;
+  neck.castShadow = true;
   group.add(neck);
 
-  // Round head with a face (+Z is the model's facing direction)
-  const head = new THREE.Mesh(new THREE.SphereGeometry(0.3, 20, 16), skinMat);
-  head.position.y = 2.18;
-  head.castShadow = true;
-  group.add(head);
-
-  // Tactical FAST-style helmet: covers top, sides, and back of the head,
-  // tilted so the front rim sits above the eyes and the face stays open
-  const gearMat = new THREE.MeshStandardMaterial({ color: 0x2b2e28, metalness: 0.3, roughness: 0.6 });
-  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.37, 20, 14, 0, Math.PI * 2, 0, Math.PI * 0.55), armorMat);
-  helmet.position.set(0, 2.22, -0.02);
-  helmet.rotation.x = -0.28;
+  // Fully enclosed sci-fi helmet - no exposed face, just plating and a glowing visor
+  // (+Z is the model's facing direction, matching the gun and lookAt orientation)
+  const gearMat = new THREE.MeshStandardMaterial({ color: 0x1c1e22, metalness: 0.55, roughness: 0.4 });
+  const helmet = new THREE.Mesh(new THREE.SphereGeometry(0.3, 22, 18), armorMat);
+  helmet.position.y = 2.16;
+  helmet.scale.set(1, 1.08, 1.02);
   helmet.castShadow = true;
   group.add(helmet);
 
-  // Accessory rails along each side of the helmet
-  const leftRail = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.07, 0.34), gearMat);
-  leftRail.position.set(-0.34, 2.2, 0.02);
-  group.add(leftRail);
-  const rightRail = new THREE.Mesh(new THREE.BoxGeometry(0.03, 0.07, 0.34), gearMat);
-  rightRail.position.set(0.34, 2.2, 0.02);
-  group.add(rightRail);
+  // Brow ridge overhangs the visor for a more angular, armored silhouette
+  const browRidge = new THREE.Mesh(new THREE.BoxGeometry(0.42, 0.09, 0.16), armorMat);
+  browRidge.position.set(0, 2.34, 0.16);
+  browRidge.rotation.x = -0.18;
+  browRidge.castShadow = true;
+  group.add(browRidge);
 
-  // Night-vision mount on the forehead
-  const nvgMount = new THREE.Mesh(new THREE.BoxGeometry(0.1, 0.1, 0.06), gearMat);
-  nvgMount.position.set(0, 2.36, 0.3);
-  group.add(nvgMount);
-  const nvgLeft = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.16, 10), gearMat);
-  nvgLeft.rotation.x = Math.PI * 0.5;
-  nvgLeft.position.set(-0.06, 2.32, 0.42);
-  group.add(nvgLeft);
-  const nvgRight = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.045, 0.16, 10), gearMat);
-  nvgRight.rotation.x = Math.PI * 0.5;
-  nvgRight.position.set(0.06, 2.32, 0.42);
-  group.add(nvgRight);
+  // Wide glowing visor band - the team-colored "face" of the helmet
+  const visor = new THREE.Mesh(new THREE.BoxGeometry(0.38, 0.15, 0.07), accentMat);
+  visor.position.set(0, 2.17, 0.27);
+  visor.castShadow = true;
+  group.add(visor);
 
-  // Chin straps running down from the helmet sides
-  const leftStrap = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.24, 0.025), gearMat);
-  leftStrap.position.set(-0.26, 1.99, 0.06);
-  leftStrap.rotation.z = 0.25;
-  group.add(leftStrap);
-  const rightStrap = new THREE.Mesh(new THREE.BoxGeometry(0.025, 0.24, 0.025), gearMat);
-  rightStrap.position.set(0.26, 1.99, 0.06);
-  rightStrap.rotation.z = -0.25;
-  group.add(rightStrap);
+  // Jaw/chin guard seals the lower face beneath the visor
+  const jaw = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.15, 0.22), armorMat);
+  jaw.position.set(0, 1.99, 0.19);
+  jaw.rotation.x = 0.12;
+  jaw.castShadow = true;
+  group.add(jaw);
 
-  // Face sits below the helmet's front rim
-  const eyeMat = new THREE.MeshStandardMaterial({ color: 0x1c1c22, roughness: 0.35 });
-  const leftEye = new THREE.Mesh(new THREE.SphereGeometry(0.045, 10, 8), eyeMat);
-  leftEye.position.set(-0.11, 2.18, 0.27);
-  group.add(leftEye);
-  const rightEye = new THREE.Mesh(new THREE.SphereGeometry(0.045, 10, 8), eyeMat);
-  rightEye.position.set(0.11, 2.18, 0.27);
-  group.add(rightEye);
+  // Breather vents on each cheek
+  const leftVent = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.055, 0.09, 10), gearMat);
+  leftVent.rotation.z = Math.PI * 0.5;
+  leftVent.position.set(-0.18, 1.98, 0.22);
+  group.add(leftVent);
+  const rightVent = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.055, 0.09, 10), gearMat);
+  rightVent.rotation.z = Math.PI * 0.5;
+  rightVent.position.set(0.18, 1.98, 0.22);
+  group.add(rightVent);
 
-  const noseMat = new THREE.MeshStandardMaterial({ color: 0xd9a87e, roughness: 0.7 });
-  const nose = new THREE.Mesh(new THREE.SphereGeometry(0.05, 10, 8), noseMat);
-  nose.position.set(0, 2.09, 0.29);
-  group.add(nose);
+  // Angular side plates cover where ears would be
+  const leftPlate = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.24, 0.26), armorMat);
+  leftPlate.position.set(-0.28, 2.12, 0.02);
+  leftPlate.castShadow = true;
+  group.add(leftPlate);
+  const rightPlate = new THREE.Mesh(new THREE.BoxGeometry(0.09, 0.24, 0.26), armorMat);
+  rightPlate.position.set(0.28, 2.12, 0.02);
+  rightPlate.castShadow = true;
+  group.add(rightPlate);
 
-  const mouthMat = new THREE.MeshStandardMaterial({ color: 0x8f4a3d, roughness: 0.6 });
-  const mouth = new THREE.Mesh(new THREE.BoxGeometry(0.13, 0.035, 0.03), mouthMat);
-  mouth.position.set(0, 2.0, 0.27);
-  group.add(mouth);
+  // Center spine ridge running front to back, like a reinforced crest
+  const ridge = new THREE.Mesh(new THREE.BoxGeometry(0.05, 0.05, 0.5), gearMat);
+  ridge.position.set(0, 2.4, 0);
+  group.add(ridge);
 
-  const leftEar = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), skinMat);
-  leftEar.position.set(-0.29, 2.13, 0);
-  group.add(leftEar);
-  const rightEar = new THREE.Mesh(new THREE.SphereGeometry(0.06, 10, 8), skinMat);
-  rightEar.position.set(0.29, 2.13, 0);
-  group.add(rightEar);
+  // Comm antenna on the back-right, a classic sci-fi helmet detail
+  const antenna = new THREE.Mesh(new THREE.CylinderGeometry(0.012, 0.016, 0.24, 6), gearMat);
+  antenna.position.set(0.18, 2.44, -0.1);
+  antenna.rotation.z = -0.18;
+  group.add(antenna);
 
-  // Gun held in front, barrel pointing forward (+Z, same way lookAt aims the model)
+  // Gun held in the right hand - parented to the shoulder so it swings with the arm
+  // instead of floating in place (+Z is the model's facing direction)
   const gun = new THREE.Mesh(new THREE.BoxGeometry(0.14, 0.16, 0.7), materials.steel);
-  gun.position.set(0.3, 1.35, 0.5);
+  gun.position.set(-0.12, -0.2, 0.5);
   gun.castShadow = true;
-  group.add(gun);
+  rightShoulder.add(gun);
 
   const gunBarrel = new THREE.Mesh(new THREE.CylinderGeometry(0.045, 0.05, 0.55, 12), materials.steel);
   gunBarrel.rotation.x = Math.PI * 0.5;
-  gunBarrel.position.set(0.3, 1.39, 1.05);
+  gunBarrel.position.set(-0.12, -0.16, 1.05);
   gunBarrel.castShadow = true;
-  group.add(gunBarrel);
+  rightShoulder.add(gunBarrel);
 
   let pos = forcedPosition;
   if (!pos) {
