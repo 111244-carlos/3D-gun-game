@@ -51,7 +51,7 @@ const weapons = [
   { name: "Scatter Shotgun", type: "Shotgun", cost: 300, ammo: 10, damage: 11, rpm: 78, range: 30, speed: 190, spread: 0.05, recoil: 0.6, color: 0x6b4423, fire: "shotgun", pellets: 8 },
   { name: "Combat Knife", type: "Melee", cost: 0, ammo: 1, damage: 45, rpm: 300, range: 2.4, speed: 0, spread: 0, recoil: 0.05, color: 0xcfd4d6, fire: "melee" },
   { name: "Katana", type: "Melee", cost: 480, ammo: 1, damage: 85, rpm: 140, range: 2.8, speed: 0, spread: 0, recoil: 0.08, color: 0xe6e6e6, fire: "melee" },
-  { name: "Riot Shield", type: "Shield", cost: 260, ammo: 1, damage: 12, rpm: 110, range: 2.0, speed: 0, spread: 0, recoil: 0.05, color: 0x384252, fire: "shield", block: 0.85 },
+  { name: "Riot Shield", type: "Shield", cost: 260, ammo: 1, damage: 38, rpm: 110, range: 2.0, speed: 0, spread: 0, recoil: 0.05, color: 0x384252, fire: "shield", block: 0.85 },
   { name: "C-4 Charge", type: "Explosive", cost: 380, ammo: Infinity, damage: 140, rpm: 90, range: 20, speed: 45, spread: 0, recoil: 0.2, color: 0x35401f, fire: "c4", blastRadius: 9 }
 ].map((weapon, index) => ({
   ...weapon,
