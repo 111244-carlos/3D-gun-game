@@ -1,0 +1,2627 @@
+// FRONTLINE — Phase 1 playable core
+// See ../SPEC.md. Three.js FPS: movement, shooting, enemy AI, respawns, HUD.
+import * as THREE from "https://unpkg.com/three@0.164.1/build/three.module.js";
+import { GUNS, UTILS, ARMOR, UTIL_COOLDOWN, XP, COINS, gunStats,
+         ROLES, ROLE_KEYS, DIFFICULTY, REVIVE,
+         MODES, MAPS, MAP_KEYS, GUN_LADDER,
+         TIMES, TIME_KEYS, WEATHER, WEATHER_KEYS, PROP_HP,
+         RANKS, SKINS, RARITY, streakHardening } from "./data.js";
+import * as OBJ from "./objectives.js";
+import * as P from "./profile.js";
+import { profile } from "./profile.js";
+import { initShop, renderHeader, isArmoryOpen } from "./shop.js";
+
+// ============================================================
+//  RENDERER / SCENE / CAMERA
+// ============================================================
+const canvas = document.querySelector("#scene");
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 1.75));
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x9fb8c9);
+scene.fog = new THREE.Fog(0x9fb8c9, 60, 220);
+
+const camera = new THREE.PerspectiveCamera(75, 1, 0.05, 500);
+camera.rotation.order = "YXZ"; // yaw then pitch
+scene.add(camera);
+
+function resize() {
+  // Use the canvas's own laid-out size (CSS 100%). Falls back to window.
+  const w = canvas.clientWidth || window.innerWidth || 1280;
+  const h = canvas.clientHeight || window.innerHeight || 720;
+  const ratio = renderer.getPixelRatio();
+  if (canvas.width === Math.floor(w * ratio) && canvas.height === Math.floor(h * ratio)) return;
+  renderer.setSize(w, h, false);
+  camera.aspect = w / h;
+  camera.updateProjectionMatrix();
+}
+window.addEventListener("resize", resize);
+resize();
+
+// ============================================================
+//  LIGHTING
+// ============================================================
+const hemi = new THREE.HemisphereLight(0xdfefff, 0x30302a, 0.9);
+scene.add(hemi);
+const sun = new THREE.DirectionalLight(0xffffff, 1.6);
+sun.position.set(40, 80, 30);
+sun.castShadow = true;
+sun.shadow.mapSize.set(1024, 1024);
+sun.shadow.camera.left = -90; sun.shadow.camera.right = 90;
+sun.shadow.camera.top = 90; sun.shadow.camera.bottom = -90;
+sun.shadow.camera.far = 260;
+scene.add(sun);
+
+// ============================================================
+//  MAP  — ground, boundary walls, cover, two respawn zones
+// ============================================================
+const MAP = 90;              // half-extent of the play field
+const colliders = [];        // AABB colliders {min:{x,z}, max:{x,z}, top}
+const solids = [];           // meshes that block bullets & sight (cached for speed)
+
+// Everything map-specific lives in this group so a new map can replace it (R-MAP-2).
+const mapGroup = new THREE.Group();
+scene.add(mapGroup);
+let ground = null;
+let currentMap = "compound";
+let currentTime = "day", currentWeather = "clear";
+const vehicles = [];     // scenery vehicles (not rideable — R-MAP-4)
+const ziplines = [];     // rideable ziplines (forest only — R-MAP-4)
+const debris = [];       // flying chunks from destroyed props (R-MAP-3)
+
+const BLUE_SPAWN = new THREE.Vector3();
+const RED_SPAWN = new THREE.Vector3();
+
+/**
+ * Add a solid box to the world.
+ * `opts.hp` makes it destructible (R-MAP-3); `opts.extra` are decorative meshes
+ * (tree canopy, vehicle parts) that disappear with it.
+ */
+function addBox(x, z, w, h, d, color, opts = {}) {
+  const mesh = new THREE.Mesh(
+    new THREE.BoxGeometry(w, h, d),
+    new THREE.MeshStandardMaterial({ color, roughness: 0.85 })
+  );
+  mesh.position.set(x, h / 2, z);
+  mesh.castShadow = true; mesh.receiveShadow = true;
+  mapGroup.add(mesh);
+
+  const col = {
+    min: { x: x - w / 2, z: z - d / 2 }, max: { x: x + w / 2, z: z + d / 2 }, top: h,
+    mesh, extra: opts.extra || [],
+    hp: opts.hp || 0, maxHp: opts.hp || 0,
+    destructible: !!opts.hp,
+    broken: false,
+    kind: opts.kind || "prop",
+  };
+  mesh.userData.collider = col;
+  colliders.push(col);
+  solids.push(mesh);
+  return col;
+}
+
+/** Decorative mesh attached to a collider (no collision of its own). */
+function addDecor(col, mesh) {
+  mapGroup.add(mesh);
+  col.extra.push(mesh);
+  return mesh;
+}
+
+/** One piece of themed cover. `breakable` wires up destruction (R-MAP-3). */
+function addProp(def, x, z, breakable) {
+  const s = def.coverScale;
+  const color = def.palette[(Math.random() * def.palette.length) | 0];
+  const hp = breakable ? PROP_HP[def.prop] || 150 : 0;
+
+  if (def.prop === "trees") {
+    const th = (7 + Math.random() * 6) * s;
+    const col = addBox(x, z, 1.5 * s, th, 1.5 * s, color, { hp, kind: "tree" });
+    const canopy = new THREE.Mesh(
+      new THREE.ConeGeometry(3.4 * s, 6 * s, 8),
+      new THREE.MeshStandardMaterial({ color: 0x35592f, roughness: 0.95 })
+    );
+    canopy.position.set(x, th + 2 * s, z);
+    canopy.castShadow = true;
+    addDecor(col, canopy);
+    return col;
+  }
+
+  if (def.prop === "buildings") {
+    const w = (7 + Math.random() * 9) * s, d = (7 + Math.random() * 9) * s;
+    const h = (8 + Math.random() * 16) * s;
+    const col = addBox(x, z, w, h, d, color, { hp: hp ? hp : 0, kind: "building" });
+    // a couple of window bands so blocks read as buildings
+    for (let i = 1; i < Math.min(4, Math.floor(h / 6)); i++) {
+      const band = new THREE.Mesh(
+        new THREE.BoxGeometry(w * 1.01, 0.7, d * 1.01),
+        new THREE.MeshStandardMaterial({ color: 0x2b3038, emissive: 0x1b2028, emissiveIntensity: 0.4 })
+      );
+      band.position.set(x, i * 6, z);
+      addDecor(col, band);
+    }
+    return col;
+  }
+
+  if (def.prop === "rocks") {
+    const w = (4 + Math.random() * 7) * s, d = (4 + Math.random() * 7) * s;
+    const h = (2.5 + Math.random() * 3.5) * s;
+    const col = addBox(x, z, w, h, d, color, { hp, kind: "rock" });
+    col.mesh.rotation.y = Math.random() * Math.PI;
+    return col;
+  }
+
+  // default: crates
+  const w = (3 + Math.random() * 6) * s;
+  const d = (3 + Math.random() * 6) * s;
+  const h = (2 + Math.random() * 4) * Math.min(1.3, s);
+  return addBox(x, z, w, h, d, color, { hp, kind: "crate" });
+}
+
+/** Scenery vehicle: blocks bullets and movement, but is not driveable (R-MAP-4). */
+function addVehicle(x, z) {
+  const body = addBox(x, z, 6.5, 2.2, 3.2, 0x4d5348, { hp: PROP_HP.vehicle, kind: "vehicle" });
+  body.mesh.rotation.y = Math.random() * Math.PI;
+
+  const cab = new THREE.Mesh(
+    new THREE.BoxGeometry(3.2, 1.6, 3.0),
+    new THREE.MeshStandardMaterial({ color: 0x3f4a3c, roughness: 0.8 })
+  );
+  cab.position.set(x, 3.0, z);
+  cab.rotation.y = body.mesh.rotation.y;
+  cab.castShadow = true;
+  addDecor(body, cab);
+
+  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x1b1d20, roughness: 1 });
+  for (const [ox, oz] of [[-2.2, -1.6], [2.2, -1.6], [-2.2, 1.6], [2.2, 1.6]]) {
+    const w = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.85, 0.6, 12), wheelMat);
+    w.rotation.z = Math.PI / 2;
+    w.position.set(x + ox, 0.85, z + oz);
+    addDecor(body, w);
+  }
+  body.vehicle = true;
+  vehicles.push(body);
+  return body;
+}
+
+/** A rideable zipline between two towers (forest maps only — R-MAP-4). */
+function addZipline() {
+  const ax = (Math.random() * 2 - 1) * (MAP - 30);
+  const az = (Math.random() * 2 - 1) * (MAP - 50);
+  const ang = Math.random() * Math.PI * 2;
+  const len = 45 + Math.random() * 30;
+  const bx = Math.max(-MAP + 12, Math.min(MAP - 12, ax + Math.cos(ang) * len));
+  const bz = Math.max(-MAP + 12, Math.min(MAP - 12, az + Math.sin(ang) * len));
+
+  const start = new THREE.Vector3(ax, 15, az);
+  const end = new THREE.Vector3(bx, 5.5, bz);
+
+  // support posts
+  for (const [px, pz, ph] of [[ax, az, 15], [bx, bz, 5.5]]) {
+    const post = new THREE.Mesh(
+      new THREE.CylinderGeometry(0.5, 0.6, ph, 8),
+      new THREE.MeshStandardMaterial({ color: 0x53402c, roughness: 0.9 })
+    );
+    post.position.set(px, ph / 2, pz);
+    post.castShadow = true;
+    mapGroup.add(post);
+  }
+
+  // the cable itself
+  const dir = new THREE.Vector3().subVectors(end, start);
+  const cable = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.09, 0.09, dir.length(), 6),
+    new THREE.MeshStandardMaterial({ color: 0x2a2a2a, roughness: 0.6 })
+  );
+  cable.position.copy(start).addScaledVector(dir, 0.5);
+  cable.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+  mapGroup.add(cable);
+
+  // glowing grab marker at the top anchor
+  const marker = new THREE.Mesh(
+    new THREE.TorusGeometry(1.1, 0.16, 8, 20),
+    new THREE.MeshStandardMaterial({ color: 0x2fb3a4, emissive: 0x2fb3a4, emissiveIntensity: 0.9 })
+  );
+  marker.position.copy(start); marker.position.y = 14.2;
+  marker.rotation.x = Math.PI / 2;
+  mapGroup.add(marker);
+
+  ziplines.push({ start, end, length: dir.length(), marker });
+}
+
+/** Tear down the current map so another can be built in its place. */
+function clearMap() {
+  for (const child of [...mapGroup.children]) {
+    mapGroup.remove(child);
+    child.geometry?.dispose?.();
+    if (Array.isArray(child.material)) child.material.forEach(m => m.dispose?.());
+    else child.material?.dispose?.();
+  }
+  colliders.length = 0;
+  solids.length = 0;
+  coverPoints.length = 0;
+  vehicles.length = 0;
+  ziplines.length = 0;
+  debris.length = 0;
+  ground = null;
+}
+
+/** Build one of the maps from the MAPS registry (R-MAP-1/2). */
+function buildMap(key) {
+  const def = MAPS[key] || MAPS.compound;
+  currentMap = def.key;
+  clearMap();
+
+  scene.background = new THREE.Color(def.sky);
+  scene.fog = new THREE.Fog(def.sky, def.fog[0], def.fog[1]);
+
+  ground = new THREE.Mesh(
+    new THREE.PlaneGeometry(MAP * 2, MAP * 2),
+    new THREE.MeshStandardMaterial({ color: def.ground, roughness: 1 })
+  );
+  ground.rotation.x = -Math.PI / 2;
+  ground.receiveShadow = true;
+  mapGroup.add(ground);
+
+  const grid = new THREE.GridHelper(MAP * 2, 36, def.grid[0], def.grid[1]);
+  grid.material.opacity = 0.35; grid.material.transparent = true;
+  mapGroup.add(grid);
+
+  // boundary walls (indestructible)
+  const wall = (x, z, w, d) => addBox(x, z, w, 6, d, def.grid[0], { kind: "wall" });
+  wall(0, -MAP, MAP * 2, 3);
+  wall(0, MAP, MAP * 2, 3);
+  wall(-MAP, 0, 3, MAP * 2);
+  wall(MAP, 0, 3, MAP * 2);
+
+  // scattered cover — style, density and destructibility vary per map
+  for (let i = 0; i < def.coverCount; i++) {
+    const x = (Math.random() * 2 - 1) * (MAP - 16);
+    const z = (Math.random() * 2 - 1) * (MAP - 30);
+    if (Math.abs(z) > MAP - 34) continue;           // keep spawn lanes clear
+    const breakable = Math.random() < (def.destructible || 0);
+    addProp(def, x, z, breakable);
+  }
+
+  // scenery vehicles — solid cover, but you can NOT ride them (R-MAP-4)
+  for (let i = 0; i < (def.vehicles || 0); i++) {
+    const x = (Math.random() * 2 - 1) * (MAP - 24);
+    const z = (Math.random() * 2 - 1) * (MAP - 44);
+    addVehicle(x, z);
+  }
+
+  // ziplines — forest only, and these ARE rideable (R-MAP-4)
+  for (let i = 0; i < (def.ziplines || 0); i++) addZipline();
+
+  // respawn zones — indestructible (R-RSP-1). Blue at -Z, Red at +Z.
+  const spawnZone = (z, color) => {
+    const pad = new THREE.Mesh(
+      new THREE.CylinderGeometry(9, 9, 0.3, 32),
+      new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.4, transparent: true, opacity: 0.55 })
+    );
+    pad.position.set(0, 0.16, z);
+    pad.receiveShadow = true;
+    mapGroup.add(pad);
+    const ring = new THREE.Mesh(
+      new THREE.TorusGeometry(9, 0.25, 8, 40),
+      new THREE.MeshStandardMaterial({ color, emissive: color, emissiveIntensity: 0.8 })
+    );
+    ring.position.set(0, 0.4, z); ring.rotation.x = Math.PI / 2;
+    mapGroup.add(ring);
+  };
+  spawnZone(-MAP + 14, 0x4a9dff);
+  spawnZone(MAP - 14, 0xff5a5a);
+  BLUE_SPAWN.set(0, 0, -MAP + 14);
+  RED_SPAWN.set(0, 0, MAP - 14);
+
+  buildCoverPoints();
+  applyEnvironment(currentTime, currentWeather);
+}
+
+// ============================================================
+//  TIME OF DAY + WEATHER  (R-MAP-5)
+// ============================================================
+let weatherPoints = null;   // THREE.Points for rain/snow
+let weatherKind = null;
+
+/** Darken/tint a hex colour toward night. */
+function tintColor(hex, mul, ambient) {
+  const c = new THREE.Color(hex);
+  const a = new THREE.Color(ambient);
+  c.multiplyScalar(mul);
+  c.lerp(a.multiplyScalar(mul), 0.25);
+  return c;
+}
+
+function applyEnvironment(timeKey, weatherKey) {
+  const def = MAPS[currentMap] || MAPS.compound;
+  const T = TIMES[timeKey] || TIMES.day;
+  const W = WEATHER[weatherKey] || WEATHER.clear;
+  currentTime = T.key; currentWeather = W.key;
+
+  // sky + fog: the map's own colour, tinted by time and thickened by weather
+  const sky = tintColor(def.sky, T.skyMul, T.ambient);
+  scene.background = sky;
+  const near = def.fog[0] * W.fogMul;
+  const far = def.fog[1] * W.fogMul;
+  scene.fog = new THREE.Fog(sky.getHex(), Math.max(8, near), Math.max(30, far));
+
+  // lights
+  sun.intensity = T.sun * W.dim;
+  sun.color.setHex(T.sunColor);
+  hemi.intensity = T.hemi * W.dim;
+  hemi.color.setHex(T.ambient);
+  // move the sun to match the hour
+  const angles = { dawn: [-60, 25, 40], day: [40, 80, 30], dusk: [60, 22, -40], night: [-30, 60, -50] };
+  const a = angles[T.key] || angles.day;
+  sun.position.set(a[0], a[1], a[2]);
+
+  buildWeatherParticles(W);
+}
+
+function buildWeatherParticles(W) {
+  if (weatherPoints) {
+    scene.remove(weatherPoints);
+    weatherPoints.geometry.dispose();
+    weatherPoints.material.dispose();
+    weatherPoints = null;
+  }
+  weatherKind = W.particles;
+  if (!W.particles) return;
+
+  const n = W.count;
+  const pos = new Float32Array(n * 3);
+  for (let i = 0; i < n; i++) {
+    pos[i * 3] = (Math.random() * 2 - 1) * MAP;
+    pos[i * 3 + 1] = Math.random() * 60;
+    pos[i * 3 + 2] = (Math.random() * 2 - 1) * MAP;
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
+  const mat = new THREE.PointsMaterial({
+    color: W.particles === "rain" ? 0xa8c4e0 : 0xffffff,
+    size: W.particles === "rain" ? 0.16 : 0.42,
+    transparent: true,
+    opacity: W.particles === "rain" ? 0.55 : 0.85,
+    depthWrite: false,
+  });
+  weatherPoints = new THREE.Points(geo, mat);
+  weatherPoints.frustumCulled = false;
+  scene.add(weatherPoints);
+}
+
+/** Fall + wrap the weather particles around the camera. */
+function updateWeather(dt) {
+  if (!weatherPoints) return;
+  const arr = weatherPoints.geometry.attributes.position.array;
+  const fall = weatherKind === "rain" ? 55 : 7;
+  const drift = weatherKind === "snow" ? 2.4 : 0.4;
+  for (let i = 0; i < arr.length; i += 3) {
+    arr[i + 1] -= fall * dt;
+    if (weatherKind === "snow") arr[i] += Math.sin(time * 0.7 + i) * drift * dt;
+    if (arr[i + 1] < 0) {
+      arr[i + 1] = 55 + Math.random() * 10;
+      arr[i] = camera.position.x + (Math.random() * 2 - 1) * 70;
+      arr[i + 2] = camera.position.z + (Math.random() * 2 - 1) * 70;
+    }
+  }
+  weatherPoints.geometry.attributes.position.needsUpdate = true;
+}
+
+// ============================================================
+//  WEAPONS — catalog-driven (Phase 2). Stats include gun level + attachments.
+// ============================================================
+/** Effective stats for the gun in a given slot of the player's live loadout. */
+function statsFor(key) { return gunStats(key, profile); }
+
+// ============================================================
+//  BOTS  — allies & enemies
+// ============================================================
+
+function makeSoldier(teamColor, roleColor) {
+  const g = new THREE.Group();
+  const bodyMat = new THREE.MeshStandardMaterial({ color: teamColor, roughness: 0.7 });
+  const skin = new THREE.MeshStandardMaterial({ color: 0xcfa07a, roughness: 0.9 });
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(1, 1.4, 0.6), bodyMat);
+  torso.position.y = 1.5; torso.castShadow = true; g.add(torso);
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.6, 0.6), skin);
+  head.position.y = 2.5; head.castShadow = true; g.add(head);
+  const helmet = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.35, 0.7), new THREE.MeshStandardMaterial({ color: 0x2f3a2a }));
+  helmet.position.y = 2.78; g.add(helmet);
+  const legs = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.4, 0.5), new THREE.MeshStandardMaterial({ color: 0x2c3128 }));
+  legs.position.y = 0.7; legs.castShadow = true; g.add(legs);
+  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 1.1), new THREE.MeshStandardMaterial({ color: 0x1c1f24 }));
+  gun.position.set(0.4, 1.6, 0.5); g.add(gun);
+  // role stripe on the helmet so you can read roles at a glance (R-ROL-2)
+  if (roleColor !== undefined) {
+    const band = new THREE.Mesh(
+      new THREE.BoxGeometry(0.74, 0.12, 0.74),
+      new THREE.MeshStandardMaterial({ color: roleColor, emissive: roleColor, emissiveIntensity: 0.55 })
+    );
+    band.position.y = 2.95; g.add(band);
+  }
+  return g;
+}
+
+const bots = [];
+let botIdSeq = 0;
+const BOT_NAMES = ["Reyes", "Vasquez", "Chen", "Novak", "Okafor", "Idris", "Lindqvist",
+                   "Barros", "Kaminski", "Tanaka", "Moreau", "Silva"];
+
+function spawnBot(team, forceRole) {
+  const isEnemy = team === "red";
+  const roleKey = forceRole || ROLE_KEYS[(Math.random() * ROLE_KEYS.length) | 0];
+  const role = ROLES[roleKey];
+  const mesh = makeSoldier(isEnemy ? 0xc94040 : 0x3f78c9, role.color);
+  scene.add(mesh);
+  const base = isEnemy ? RED_SPAWN : BLUE_SPAWN;
+  const bot = {
+    id: ++botIdSeq,
+    name: BOT_NAMES[botIdSeq % BOT_NAMES.length],
+    team, role: roleKey, roleData: role, mesh,
+    hp: role.hp, maxHp: role.hp,
+    speed: 6 * role.speed,
+    pos: new THREE.Vector3(base.x + (Math.random() * 12 - 6), 0, base.z + (Math.random() * 8 - 4)),
+    vel: new THREE.Vector3(),
+    alive: true, cd: 0, seenAt: 0, respawnAt: 0,
+    // Phase 3 AI state
+    ai: "advance",          // advance | cover | flank | engage | revive | order
+    aiTimer: 0,             // when to re-think
+    coverPos: null,
+    flankSign: Math.random() < 0.5 ? -1 : 1,
+    nadeCd: 6 + Math.random() * 8,
+    downed: false, bleed: 0, reviveProgress: 0,
+    healCd: 0,
+  };
+  mesh.position.copy(bot.pos);
+  bots.push(bot);
+  return bot;
+}
+
+// ============================================================
+//  PLAYER STATE
+// ============================================================
+const player = {
+  pos: new THREE.Vector3().copy(BLUE_SPAWN),
+  vel: new THREE.Vector3(),
+  yaw: 0, pitch: 0,
+  hp: 150, maxHp: 150,
+  height: 2.4, radius: 0.5,
+  onGround: true,
+  stamina: 100, sliding: false, slideT: 0,
+  alive: true, respawnAt: 0,
+  zip: null, zipT: 0,                 // zipline ride state (R-MAP-4)
+  downed: false, bleed: 0, reviveProgress: 0, reviverName: "",
+  role: "rusher", roleData: ROLES.rusher, speedMul: 1,
+  reviveTargetProgress: 0,
+  armor: 0, maxArmor: 0,
+  slot: 0,
+  loadout: profile.loadout.slice(),   // [primary, secondary, melee, utility]
+  ammo: {}, reserve: {},
+  fireCd: 0, reloading: 0, ads: false,
+  kills: 0, assists: 0,
+  utilUses: 0, utilCd: 0,            // R-ECO-6 (~30s between uses)
+  burstLeft: 0, burstCd: 0,
+  frozenT: 0,
+};
+
+/** Key of the item in the active slot. */
+function curKey() { return player.loadout[player.slot]; }
+/** Live stats for the equipped gun (null when the utility slot is active). */
+function curWeapon() {
+  const k = curKey();
+  return GUNS[k] ? statsFor(k) : null;
+}
+function isUtilSlot() { return player.slot === 3; }
+
+/** Apply the chosen role's stats to the player (R-ROL-1/2). */
+function applyRole(roleKey) {
+  const r = ROLES[roleKey] || ROLES.rusher;
+  player.role = roleKey;
+  player.roleData = r;
+  player.maxHp = r.hp;
+  player.hp = Math.min(player.hp || r.hp, r.hp);
+  player.speedMul = r.speed;
+}
+
+/** Fill mags/reserves for the current loadout — called on spawn (R-LDO-3, R-RSP-2). */
+function applyLoadout() {
+  player.loadout = profile.loadout.slice();
+  player.ammo = {}; player.reserve = {};
+  for (const k of player.loadout) {
+    const g = GUNS[k];
+    if (!g) continue;
+    const s = statsFor(k);
+    player.ammo[k] = s.mag;
+    player.reserve[k] = g.reserve;
+  }
+  const a = ARMOR[profile.armor] || ARMOR.none;
+  player.maxArmor = a.value;
+  player.armor = a.value;
+  const u = UTILS[player.loadout[3]];
+  player.utilUses = u ? u.uses : 0;
+  player.utilCd = 0;
+  player.slot = GUNS[player.loadout[0]] ? 0 : 1;
+  player.burstLeft = 0;
+}
+
+// first-person weapon viewmodel
+const viewGun = new THREE.Mesh(
+  new THREE.BoxGeometry(0.22, 0.22, 1.2),
+  new THREE.MeshStandardMaterial({ color: 0x23262c, roughness: 0.6 })
+);
+viewGun.position.set(0.32, -0.32, -0.7);
+camera.add(viewGun);
+const muzzle = new THREE.PointLight(0xffd27f, 0, 8);
+muzzle.position.set(0.32, -0.28, -1.3);
+camera.add(muzzle);
+
+// ============================================================
+//  INPUT
+// ============================================================
+const keys = {};
+function selectSlot(i) {
+  if (!player.alive) return;
+  const k = player.loadout[i];
+  if (!k) return;
+  player.slot = i;
+  player.reloading = 0;
+  player.burstLeft = 0;
+}
+addEventListener("keydown", (e) => {
+  // typing in chat swallows all gameplay keys
+  if (chatOpen) return;
+  if (e.code === "Enter" || e.code === "NumpadEnter") { e.preventDefault(); openChat(); return; }
+
+  keys[e.code] = true;
+  if (e.code === "Digit1") selectSlot(0);
+  if (e.code === "Digit2") selectSlot(1);
+  if (e.code === "Digit3") selectSlot(2);
+  if (e.code === "Digit4") selectSlot(3);
+  if (e.code === "KeyR") startReload();
+  if (e.code === "Space" && player.onGround && player.alive) { player.vel.y = 10; player.onGround = false; }
+});
+addEventListener("keyup", (e) => { if (!chatOpen) keys[e.code] = false; });
+
+let mouseDown = false;
+addEventListener("mousedown", (e) => {
+  if (!running) return;
+  if (e.button === 0) mouseDown = true;
+  if (e.button === 2) player.ads = true;
+});
+addEventListener("mouseup", (e) => {
+  if (e.button === 0) mouseDown = false;
+  if (e.button === 2) player.ads = false;
+});
+addEventListener("contextmenu", (e) => e.preventDefault());
+
+// pointer lock look
+const SENS = 0.0022;
+addEventListener("mousemove", (e) => {
+  if (document.pointerLockElement !== canvas) return;
+  player.yaw -= e.movementX * SENS;
+  player.pitch -= e.movementY * SENS;
+  const lim = Math.PI / 2 - 0.05;
+  player.pitch = Math.max(-lim, Math.min(lim, player.pitch));
+});
+const lockPrompt = document.getElementById("lockPrompt");
+lockPrompt.addEventListener("click", () => canvas.requestPointerLock());
+canvas.addEventListener("click", () => { if (running) canvas.requestPointerLock(); });
+document.addEventListener("pointerlockchange", () => {
+  lockPrompt.classList.toggle("hidden", document.pointerLockElement === canvas);
+});
+
+// ============================================================
+//  COLLISION
+// ============================================================
+function collide(pos) {
+  const r = player.radius;
+  for (const c of colliders) {
+    if (player.pos.y > c.top + 0.2) continue; // above it — standing on top handled separately
+    const nx = Math.max(c.min.x, Math.min(pos.x, c.max.x));
+    const nz = Math.max(c.min.z, Math.min(pos.z, c.max.z));
+    const dx = pos.x - nx, dz = pos.z - nz;
+    const d2 = dx * dx + dz * dz;
+    if (d2 < r * r) {
+      const d = Math.sqrt(d2) || 0.001;
+      pos.x = nx + (dx / d) * r;
+      pos.z = nz + (dz / d) * r;
+    }
+  }
+  const lim = MAP - 2;
+  pos.x = Math.max(-lim, Math.min(lim, pos.x));
+  pos.z = Math.max(-lim, Math.min(lim, pos.z));
+}
+
+// ============================================================
+//  SHOOTING
+// ============================================================
+const raycaster = new THREE.Raycaster();
+let recoil = 0;
+
+function startReload() {
+  const wk = curKey();
+  const g = GUNS[wk];
+  if (!g || g.melee || isUtilSlot()) return;
+  const s = statsFor(wk);
+  if (player.reloading > 0) return;
+  if (player.ammo[wk] >= s.mag) return;
+  if (player.reserve[wk] <= 0) { toast("No reserve ammo!"); return; }
+  player.reloading = g.reload;
+}
+function finishReload() {
+  const wk = curKey();
+  const s = statsFor(wk);
+  const need = s.mag - player.ammo[wk];
+  const take = Math.min(need, player.reserve[wk]);
+  player.ammo[wk] += take; player.reserve[wk] -= take;
+}
+
+/** One hitscan pellet. Returns the bot hit (or null). */
+function castShot(spread, dmg) {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  dir.x += (Math.random() * 2 - 1) * spread;
+  dir.y += (Math.random() * 2 - 1) * spread;
+  dir.z += (Math.random() * 2 - 1) * spread;
+  dir.normalize();
+  raycaster.set(camera.getWorldPosition(new THREE.Vector3()), dir);
+
+  let hitBot = null, hitDist = Infinity;
+  for (const b of bots) {
+    if (!b.alive) continue;
+    const box = new THREE.Box3().setFromCenterAndSize(
+      new THREE.Vector3(b.pos.x, 1.6, b.pos.z), new THREE.Vector3(1.2, 3.2, 1.2)
+    );
+    const pt = raycaster.ray.intersectBox(box, new THREE.Vector3());
+    if (pt) {
+      const d = pt.distanceTo(raycaster.ray.origin);
+      if (d < hitDist) { hitDist = d; hitBot = b; }
+    }
+  }
+  const worldHits = raycaster.intersectObjects(worldMeshes(), false);
+  const worldDist = worldHits.length ? worldHits[0].distance : Infinity;
+
+  if (hitBot && hitDist < worldDist) {
+    damageBot(hitBot, dmg);
+    return hitBot;
+  }
+  // hit the world instead — chip away at destructible cover (R-MAP-3)
+  if (worldHits.length) {
+    const col = worldHits[0].object.userData.collider;
+    if (col && col.destructible) damageProp(col, dmg);
+  }
+  return null;
+}
+
+/** Damage a bot from the player, applying friendly-fire rules (R-CMB-4). */
+function damageBot(b, dmg) {
+  b.hp -= dmg;
+  hitMarker();
+  if (b.team === "blue") {
+    P.addCoins(-COINS.teamkillPenalty);
+    toast(`Friendly fire! -${COINS.teamkillPenalty} coins`);
+  }
+  if (b.hp <= 0 && b.alive) killBot(b, true);
+}
+
+function meleeSwing(s) {
+  const origin = camera.getWorldPosition(new THREE.Vector3());
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  let best = null, bestD = Infinity;
+  for (const b of bots) {
+    if (!b.alive) continue;
+    const to = new THREE.Vector3(b.pos.x, 1.6, b.pos.z).sub(origin);
+    const d = to.length();
+    if (d > s.range) continue;
+    if (to.normalize().dot(dir) < 0.6) continue;   // must be roughly in front
+    if (d < bestD) { bestD = d; best = b; }
+  }
+  if (best) damageBot(best, s.dmg);
+  // little lunge on the viewmodel
+  viewGun.position.z = -1.1;
+}
+
+function tryFire(dt) {
+  player.fireCd -= dt;
+  player.burstCd -= dt;
+  if (!player.alive || player.reloading > 0) return;
+
+  // ----- utility slot (throwables) -----
+  if (isUtilSlot()) {
+    const justPressed = mouseDown && !player._firedTap;
+    player._firedTap = mouseDown;
+    if (justPressed) throwUtility();
+    return;
+  }
+
+  const wk = curKey();
+  const g = GUNS[wk];
+  if (!g) return;
+  const s = statsFor(wk);
+
+  // ----- melee -----
+  if (g.melee) {
+    const justPressed = mouseDown && !player._firedTap;
+    player._firedTap = mouseDown;
+    if (justPressed && player.fireCd <= 0) {
+      player.fireCd = 60 / g.rpm;
+      meleeSwing(s);
+    }
+    return;
+  }
+
+  // ----- guns -----
+  const auto = g.auto;
+  const justPressed = mouseDown && !player._firedTap;
+  player._firedTap = mouseDown;
+
+  // burst weapons: one trigger pull queues N rounds
+  if (g.burst) {
+    if (justPressed && player.burstLeft <= 0 && player.ammo[wk] > 0) player.burstLeft = g.burst;
+    if (player.burstLeft <= 0 || player.fireCd > 0) return;
+  } else {
+    const wantFire = auto ? mouseDown : justPressed;
+    if (!wantFire || player.fireCd > 0) return;
+  }
+
+  if (player.ammo[wk] <= 0) {
+    if (justPressed) toast("Reload! (R)");
+    player.burstLeft = 0;
+    return;
+  }
+
+  player.fireCd = 60 / g.rpm;
+  player.ammo[wk]--;
+  if (player.burstLeft > 0) player.burstLeft--;
+
+  // spread: base * movement/jump penalty, reduced by ADS  (R-CMB-3)
+  const moving = player.vel.x * player.vel.x + player.vel.z * player.vel.z > 4;
+  let spread = s.spread * 0.01;
+  if (moving) spread *= 2.2;
+  if (!player.onGround) spread *= 3;
+  // sniper perk: much steadier when aiming down sights (R-ROL-2)
+  if (player.ads) spread *= (player.role === "sniper" ? 0.19 : 0.35);
+
+  muzzleFlash();
+  recoil += s.kick * (player.ads ? 0.5 : 1) * 0.01;
+
+  const pellets = g.pellets || 1;
+  for (let i = 0; i < pellets; i++) castShot(spread, s.dmg);
+}
+
+/** Kill a bot. `byPlayer` drives coins/XP (R-ECO-1, R-ECO-5). */
+function killBot(b, byPlayer) {
+  if (b.team === "red") {
+    b.alive = false;
+    b.mesh.visible = false;
+    b.respawnAt = time + 5;
+    if (byPlayer) {
+      player.kills++;
+      P.addCoins(COINS.kill);
+      P.addXp(XP.kill);
+      profile.stats.kills++;
+      coinPopup(`+${COINS.kill}`);
+      xpPopup(`+${XP.kill} XP`);
+      // Gun Game: every kill moves you up the weapon ladder (R-MOD-1)
+      if (state.mode === "gun") {
+        if (OBJ.gunGameAdvance()) { endMatch(true); return; }
+        applyGunGameWeapon();
+      }
+    }
+    if (state.mode === "wave") state.waveKills++;
+    else state.blueScore++;
+  } else {
+    downOrKillBot(b);                  // your own team lost someone
+  }
+}
+
+/** Blue bots go DOWN first so they can be revived (R-AI-3); red bots just die. */
+function downOrKillBot(b) {
+  if (b.downed || !b.alive) return;
+  if (b.team === "blue") {
+    b.downed = true;
+    b.hp = 0;
+    b.bleed = REVIVE.bleedOut;
+    b.reviveProgress = 0;
+    b.mesh.scale.set(1, 0.45, 1);      // slumped
+    chatSys(`${b.name} is down!`);
+    return;
+  }
+  b.alive = false; b.mesh.visible = false; b.respawnAt = time + 5;
+  if (state.mode !== "wave") state.blueScore++;
+}
+
+/** Bled out without help. */
+function finishBotDeath(b) {
+  b.downed = false;
+  b.alive = false;
+  b.mesh.visible = false;
+  b.mesh.scale.set(1, 1, 1);
+  b.respawnAt = time + 5;
+  if (state.mode !== "wave") state.redScore++;
+}
+
+function reviveBot(b, byName) {
+  b.downed = false;
+  b.alive = true;
+  b.hp = REVIVE.hpOnRevive;
+  b.reviveProgress = 0;
+  b.mesh.scale.set(1, 1, 1);
+  b.mesh.visible = true;
+  b.ai = "advance"; b.seenAt = 0;
+  chatSys(`${byName} revived ${b.name}`);
+}
+
+/**
+ * Meshes that block bullets — the map's solids plus any deployed shields.
+ * The AI raycasts against this hundreds of times per frame, so the array is
+ * cached and only rebuilt when the world actually changes.
+ */
+let shieldMeshes = [];
+let wmCache = null, wmSolids = -1, wmShields = -1;
+
+function worldMeshes() {
+  if (wmCache && wmSolids === solids.length && wmShields === shieldMeshes.length) return wmCache;
+  wmCache = shieldMeshes.length ? solids.concat(shieldMeshes) : solids;
+  wmSolids = solids.length;
+  wmShields = shieldMeshes.length;
+  return wmCache;
+}
+
+/** Keep the deployed-shield list in sync with live effects (called once a frame). */
+function refreshShieldMeshes() {
+  let count = 0;
+  for (const e of effects) if (e.kind === "shield" && e.mesh) count++;
+  if (count === shieldMeshes.length) return;
+  shieldMeshes = [];
+  for (const e of effects) if (e.kind === "shield" && e.mesh) shieldMeshes.push(e.mesh);
+  wmCache = null;
+}
+
+// ============================================================
+//  DESTRUCTION  (R-MAP-3)
+// ============================================================
+/** Damage a destructible prop. Returns true if it broke. */
+function damageProp(col, dmg) {
+  if (!col || !col.destructible || col.broken) return false;
+  col.hp -= dmg;
+
+  // visibly scuff it as it takes damage
+  const k = Math.max(0, col.hp / col.maxHp);
+  col.mesh.material.color.multiplyScalar(0.985);
+  col.mesh.scale.y = 0.75 + k * 0.25;
+  col.mesh.position.y = (col.top * col.mesh.scale.y) / 2;
+
+  if (col.hp <= 0) { breakProp(col); return true; }
+  return false;
+}
+
+/** Destroy a prop: remove it, drop its collider and cover, throw debris. */
+function breakProp(col) {
+  if (col.broken) return;
+  col.broken = true;
+
+  spawnDebris(col);
+
+  // remove visuals
+  mapGroup.remove(col.mesh);
+  col.mesh.geometry?.dispose?.();
+  col.mesh.material?.dispose?.();
+  for (const e of col.extra) {
+    mapGroup.remove(e);
+    e.geometry?.dispose?.();
+    e.material?.dispose?.();
+  }
+  col.extra.length = 0;
+
+  // it no longer blocks movement, bullets or sight
+  let i = colliders.indexOf(col);
+  if (i >= 0) colliders.splice(i, 1);
+  i = solids.indexOf(col.mesh);
+  if (i >= 0) solids.splice(i, 1);
+  i = vehicles.indexOf(col);
+  if (i >= 0) vehicles.splice(i, 1);
+
+  // cover points around it are gone too, so the AI stops hiding at thin air
+  const cx = (col.min.x + col.max.x) / 2, cz = (col.min.z + col.max.z) / 2;
+  const reach = Math.max(col.max.x - col.min.x, col.max.z - col.min.z) / 2 + 2.5;
+  for (let j = coverPoints.length - 1; j >= 0; j--) {
+    const p = coverPoints[j];
+    if (Math.abs(p.x - cx) <= reach && Math.abs(p.z - cz) <= reach) coverPoints.splice(j, 1);
+  }
+}
+
+function spawnDebris(col) {
+  const cx = (col.min.x + col.max.x) / 2, cz = (col.min.z + col.max.z) / 2;
+  const color = col.mesh.material.color.getHex();
+  const n = col.kind === "building" ? 12 : 7;
+  for (let i = 0; i < n; i++) {
+    const s = 0.5 + Math.random() * 1.1;
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(s, s, s),
+      new THREE.MeshStandardMaterial({ color, roughness: 0.9 })
+    );
+    m.position.set(cx + (Math.random() * 2 - 1) * 2, col.top * 0.5 + Math.random() * 2, cz + (Math.random() * 2 - 1) * 2);
+    mapGroup.add(m);
+    debris.push({
+      mesh: m, life: 2.6,
+      vel: new THREE.Vector3((Math.random() * 2 - 1) * 7, 4 + Math.random() * 7, (Math.random() * 2 - 1) * 7),
+      spin: new THREE.Vector3(Math.random() * 6, Math.random() * 6, Math.random() * 6),
+    });
+  }
+}
+
+function updateDebris(dt) {
+  for (let i = debris.length - 1; i >= 0; i--) {
+    const d = debris[i];
+    d.vel.y -= 24 * dt;
+    d.mesh.position.addScaledVector(d.vel, dt);
+    d.mesh.rotation.x += d.spin.x * dt;
+    d.mesh.rotation.y += d.spin.y * dt;
+    if (d.mesh.position.y < 0.3) { d.mesh.position.y = 0.3; d.vel.set(0, 0, 0); }
+    d.life -= dt;
+    if (d.life <= 0) {
+      mapGroup.remove(d.mesh);
+      d.mesh.geometry.dispose(); d.mesh.material.dispose();
+      debris.splice(i, 1);
+    }
+  }
+}
+
+/** Explosions chew through nearby destructible cover. */
+function damagePropsInRadius(at, radius, dmg) {
+  for (let i = colliders.length - 1; i >= 0; i--) {
+    const c = colliders[i];
+    if (!c.destructible || c.broken) continue;
+    const cx = (c.min.x + c.max.x) / 2, cz = (c.min.z + c.max.z) / 2;
+    const d = Math.hypot(cx - at.x, cz - at.z);
+    if (d > radius) continue;
+    damageProp(c, dmg * (1 - d / radius));
+  }
+}
+
+// ============================================================
+//  LINE OF SIGHT + COVER  (used by the AI)
+// ============================================================
+const losCaster = new THREE.Raycaster();
+
+/** Can `a` see `b`? Walls block; smoke clouds block too (R-SND/smoke tactics). */
+function hasLOS(a, b, ignoreSmoke) {
+  const from = new THREE.Vector3(a.x, 1.7, a.z);
+  const to = new THREE.Vector3(b.x, 1.6, b.z);
+  const dir = new THREE.Vector3().subVectors(to, from);
+  const dist = dir.length();
+  if (dist < 0.001) return true;
+  dir.normalize();
+  losCaster.set(from, dir);
+  losCaster.far = dist;
+  const hits = losCaster.intersectObjects(worldMeshes(), false);
+  if (hits.length && hits[0].distance < dist - 1) return false;
+
+  if (!ignoreSmoke) {
+    // a smoke cloud sitting on the sight line blocks vision
+    for (const e of effects) {
+      if (e.kind !== "smoke") continue;
+      if (distPointToSegment(e.at, from, to) < e.radius * 0.85) return false;
+    }
+  }
+  return true;
+}
+
+function distPointToSegment(p, a, b) {
+  const ab = new THREE.Vector3().subVectors(b, a);
+  const ap = new THREE.Vector3().subVectors(p, a);
+  const len2 = ab.lengthSq() || 1;
+  const t = Math.max(0, Math.min(1, ap.dot(ab) / len2));
+  return ap.sub(ab.multiplyScalar(t)).length();
+}
+
+/** Spots beside each piece of cover the AI can hide at. */
+const coverPoints = [];
+function buildCoverPoints() {
+  for (const c of colliders) {
+    const w = c.max.x - c.min.x, d = c.max.z - c.min.z;
+    if (c.top < 1.3) continue;          // too short to hide behind
+    if (w > 40 || d > 40) continue;     // boundary walls, not cover
+    const cx = (c.min.x + c.max.x) / 2, cz = (c.min.z + c.max.z) / 2;
+    const ox = w / 2 + 1.4, oz = d / 2 + 1.4;
+    coverPoints.push(
+      new THREE.Vector3(cx + ox, 0, cz), new THREE.Vector3(cx - ox, 0, cz),
+      new THREE.Vector3(cx, 0, cz + oz), new THREE.Vector3(cx, 0, cz - oz),
+    );
+  }
+}
+
+/**
+ * Nearest spot that actually hides `from` from `threat`.
+ * Raycasting every cover point is far too expensive, so candidates are cheaply
+ * filtered and sorted by distance first and only the closest few are traced.
+ */
+const MAX_COVER_TRACES = 12;
+const coverCandidates = [];
+function findCover(from, threat) {
+  coverCandidates.length = 0;
+  for (const p of coverPoints) {
+    const dx = p.x - from.x, dz = p.z - from.z;
+    const d2 = dx * dx + dz * dz;
+    if (d2 > 42 * 42) continue;
+    const tx = p.x - threat.x, tz = p.z - threat.z;
+    if (tx * tx + tz * tz < 81) continue;        // don't hide in their lap
+    coverCandidates.push({ p, d2 });
+  }
+  coverCandidates.sort((a, b) => a.d2 - b.d2);
+
+  const limit = Math.min(coverCandidates.length, MAX_COVER_TRACES);
+  for (let i = 0; i < limit; i++) {
+    const p = coverCandidates[i].p;
+    if (!hasLOS(p, threat, true)) return p;      // closest genuinely-covered spot
+  }
+  return null;
+}
+
+// ============================================================
+//  UTILITIES (slot 4) — throwables & gadgets  (R-LDO-2, R-ECO-6)
+// ============================================================
+const projectiles = [];   // in-flight throwables
+const effects = [];       // landed area effects (smoke/fire/pad/shield/freeze)
+
+function throwUtility() {
+  const uk = player.loadout[3];
+  const u = UTILS[uk];
+  if (!u) return;
+  if (player.utilCd > 0) { toast(`${u.name} on cooldown (${Math.ceil(player.utilCd)}s)`); return; }
+  if (player.utilUses <= 0) { toast(`No ${u.name} left — resupply on respawn`); return; }
+
+  player.utilUses--;
+  player.utilCd = UTIL_COOLDOWN;      // long cooldown between uses
+
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(0.22, 10, 8),
+    new THREE.MeshStandardMaterial({ color: u.color, emissive: u.color, emissiveIntensity: 0.3 })
+  );
+  const start = camera.getWorldPosition(new THREE.Vector3()).add(dir.clone().multiplyScalar(0.8));
+  mesh.position.copy(start);
+  scene.add(mesh);
+
+  // Deployables (heal kit, jump pad, shield) drop at your feet so you can use them;
+  // grenades and molotovs are thrown downrange.
+  const power = u.place ? 4 : 26;
+  const lift = u.place ? 1.5 : 5;
+
+  projectiles.push({
+    key: uk, u, mesh,
+    pos: start.clone(),
+    vel: dir.multiplyScalar(power).add(new THREE.Vector3(0, lift, 0)),
+    fuse: u.fuse,
+  });
+  toast(`${u.name} ${u.place ? "deployed" : "thrown"}`);
+}
+
+function updateProjectiles(dt) {
+  for (let i = projectiles.length - 1; i >= 0; i--) {
+    const p = projectiles[i];
+    p.vel.y -= 22 * dt;
+    p.pos.addScaledVector(p.vel, dt);
+    // bounce off ground
+    if (p.pos.y < 0.22) { p.pos.y = 0.22; p.vel.y *= -0.35; p.vel.x *= 0.7; p.vel.z *= 0.7; }
+    p.mesh.position.copy(p.pos);
+    p.fuse -= dt;
+    if (p.fuse <= 0) {
+      detonate(p);
+      scene.remove(p.mesh);
+      projectiles.splice(i, 1);
+    }
+  }
+}
+
+function detonate(p) {
+  const u = p.u, at = p.pos.clone();
+  switch (u.kind) {
+    case "frag": {
+      explode(at, u.radius, u.dmg, 0xffb060, p.fromTeam);
+      break;
+    }
+    case "fire": {          // molotov — lingering damage pool
+      addEffect({ kind: "fire", at, radius: u.radius, life: u.life, dps: u.dmg, color: u.color, tick: 0 });
+      break;
+    }
+    case "smoke": {
+      addEffect({ kind: "smoke", at, radius: u.radius, life: u.life, color: u.color });
+      break;
+    }
+    case "flash": {         // blinds the player if close + in view
+      const d = at.distanceTo(player.pos);
+      if (d < u.radius) {
+        const strength = 1 - d / u.radius;
+        flashBlind(strength);
+      }
+      for (const b of bots) if (b.alive && b.pos.distanceTo(at) < u.radius) b.seenAt = time + 2.5; // stunned
+      break;
+    }
+    case "heal": {          // healing kit — heals player + allies in radius
+      if (at.distanceTo(player.pos) < u.radius) {
+        player.hp = Math.min(player.maxHp, player.hp + u.heal);
+        healPopup(`+${u.heal} HP`);
+      }
+      for (const b of bots) if (b.alive && b.team === "blue" && b.pos.distanceTo(at) < u.radius)
+        b.hp = Math.min(b.maxHp, b.hp + u.heal);
+      break;
+    }
+    case "freeze": {
+      explode(at, u.radius, u.dmg, 0x9fe8ff);
+      addEffect({ kind: "freeze", at, radius: u.radius, life: u.life, color: u.color });
+      for (const b of bots) if (b.alive && b.pos.distanceTo(at) < u.radius) b.frozenUntil = time + u.life;
+      break;
+    }
+    case "pad": {
+      addEffect({ kind: "pad", at, radius: u.radius, life: u.life, color: u.color });
+      break;
+    }
+    case "shield": {
+      addEffect({ kind: "shield", at, radius: u.radius, life: u.life, color: u.color });
+      break;
+    }
+  }
+}
+
+/**
+ * Instant radial damage (frag / freeze burst).
+ * `fromTeam` (optional) marks a bot-thrown grenade — it spares that team,
+ * and only the player's own grenades feed coins/XP.
+ */
+function explode(at, radius, dmg, color, fromTeam) {
+  // visual puff
+  const puff = new THREE.Mesh(
+    new THREE.SphereGeometry(radius * 0.6, 14, 12),
+    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.55 })
+  );
+  puff.position.copy(at); scene.add(puff);
+  effects.push({ kind: "puff", mesh: puff, life: 0.4, maxLife: 0.4, at, radius: 0 });
+
+  // blasts tear up destructible cover (R-MAP-3)
+  damagePropsInRadius(at, radius * 1.15, dmg * 1.4);
+
+  const byPlayer = !fromTeam;
+  for (const b of bots) {
+    if (!b.alive || b.downed) continue;
+    if (fromTeam && b.team === fromTeam) continue;      // don't frag your own squad
+    const d = b.pos.distanceTo(at);
+    if (d > radius) continue;
+    const falloff = 1 - d / radius;
+    if (byPlayer) damageBot(b, dmg * falloff);
+    else damageBotFromBot(b, dmg * falloff);
+  }
+  // the player is on blue — blue-thrown bot grenades don't hurt them
+  if (fromTeam !== "blue") {
+    const dp = player.pos.distanceTo(at);
+    if (dp < radius && player.alive && !player.downed) damagePlayer(dmg * (1 - dp / radius) * 0.7, at);
+  }
+}
+
+function addEffect(e) {
+  let mesh;
+  if (e.kind === "smoke") {
+    mesh = new THREE.Mesh(
+      new THREE.SphereGeometry(e.radius, 16, 12),
+      new THREE.MeshBasicMaterial({ color: e.color, transparent: true, opacity: 0.72 })
+    );
+  } else if (e.kind === "fire" || e.kind === "freeze") {
+    mesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(e.radius, e.radius, 0.5, 20),
+      new THREE.MeshBasicMaterial({ color: e.color, transparent: true, opacity: 0.5 })
+    );
+  } else if (e.kind === "pad") {
+    mesh = new THREE.Mesh(
+      new THREE.CylinderGeometry(e.radius, e.radius, 0.3, 18),
+      new THREE.MeshStandardMaterial({ color: e.color, emissive: e.color, emissiveIntensity: 0.7 })
+    );
+  } else if (e.kind === "shield") {
+    mesh = new THREE.Mesh(
+      new THREE.BoxGeometry(e.radius * 2, 2.6, 0.4),
+      new THREE.MeshStandardMaterial({ color: e.color, transparent: true, opacity: 0.72 })
+    );
+    mesh.rotation.y = player.yaw;
+  }
+  if (mesh) {
+    mesh.position.copy(e.at);
+    if (e.kind !== "smoke") mesh.position.y = e.kind === "shield" ? 1.3 : 0.25;
+    scene.add(mesh);
+  }
+  effects.push({ ...e, mesh, maxLife: e.life });
+}
+
+function updateEffects(dt) {
+  for (let i = effects.length - 1; i >= 0; i--) {
+    const e = effects[i];
+    e.life -= dt;
+
+    if (e.kind === "fire") {
+      e.tick -= dt;
+      if (e.tick <= 0) {
+        e.tick = 0.5;
+        for (const b of bots) if (b.alive && b.pos.distanceTo(e.at) < e.radius) damageBot(b, e.dps * 0.5);
+        if (player.alive && player.pos.distanceTo(e.at) < e.radius) damagePlayer(e.dps * 0.5, e.at);
+      }
+    } else if (e.kind === "pad") {
+      if (player.alive && player.onGround && player.pos.distanceTo(e.at) < e.radius) {
+        player.vel.y = 22; player.onGround = false;
+      }
+    } else if (e.kind === "puff" && e.mesh) {
+      const k = e.life / e.maxLife;
+      e.mesh.scale.setScalar(1 + (1 - k) * 1.6);
+      e.mesh.material.opacity = 0.55 * k;
+    }
+
+    if (e.life <= 0) {
+      if (e.mesh) scene.remove(e.mesh);
+      effects.splice(i, 1);
+    } else if (e.mesh && (e.kind === "smoke" || e.kind === "freeze")) {
+      e.mesh.material.opacity = Math.min(0.72, (e.life / e.maxLife) * 0.9);
+    }
+  }
+}
+
+// flashbang screen blind
+const flashOverlay = document.getElementById("flashOverlay");
+let blindT = 0, blindMax = 0;
+function flashBlind(strength) {
+  blindT = 2.5 * strength; blindMax = blindT;
+  toast("Flashed!");
+}
+
+// muzzle flash + hit feedback
+let flashT = 0;
+function muzzleFlash() { flashT = 0.05; muzzle.intensity = 3; }
+const hitmarkerEl = document.getElementById("hitmarker");
+function hitMarker() {
+  hitmarkerEl.classList.remove("show");
+  void hitmarkerEl.offsetWidth;
+  hitmarkerEl.classList.add("show");
+}
+const popupsEl = document.getElementById("popups");
+function popup(txt, color, dy) {
+  const el = document.createElement("div");
+  el.className = "popup"; el.textContent = txt;
+  el.style.left = (Math.random() * 30 - 15) + "px";
+  if (color) el.style.color = color;
+  if (dy) el.style.top = dy + "px";
+  popupsEl.appendChild(el);
+  setTimeout(() => el.remove(), 900);
+}
+function coinPopup(txt) { popup(txt, null, 0); }
+function xpPopup(txt) { popup(txt, "#9ad0ff", 22); }
+function healPopup(txt) { popup(txt, "#6ee87a", -22); }
+
+// directional damage indicator (R-CMB-5)
+const dmgDirEl = document.getElementById("dmgDir");
+let dmgDirT = 0;
+function showDamageFrom(worldPos) {
+  const dx = worldPos.x - player.pos.x, dz = worldPos.z - player.pos.z;
+  const ang = Math.atan2(dx, dz) - player.yaw; // relative to facing
+  const deg = ang * 180 / Math.PI;
+  dmgDirEl.style.background = `conic-gradient(from ${deg}deg at 50% 50%, rgba(255,60,60,0.55) 0deg, rgba(255,60,60,0) 40deg, rgba(255,60,60,0) 320deg, rgba(255,60,60,0.55) 360deg)`;
+  dmgDirEl.classList.add("show");
+  dmgDirT = 0.9;
+}
+
+function damagePlayer(amount, fromPos) {
+  if (!player.alive || player.downed) return;
+  // role damage reduction (heavy) then armor soak (R-ECO-4, R-ROL-2)
+  amount *= (1 - (player.roleData ? player.roleData.dr : 0));
+  if (player.armor > 0) {
+    const soak = Math.min(player.armor, amount * 0.65);
+    player.armor -= soak;
+    amount -= soak;
+  }
+  player.hp -= amount;
+  if (fromPos) showDamageFrom(fromPos);
+  if (player.hp <= 0) { player.hp = 0; playerDown(); }
+}
+
+/**
+ * Lethal hit: if a teammate is still up, you go DOWN and they can revive you
+ * (R-AI-3). Otherwise it's a straight death.
+ */
+function playerDown() {
+  const helpAvailable = bots.some(b => b.team === "blue" && b.alive && !b.downed);
+  if (!helpAvailable) { playerDie(); return; }
+  player.downed = true;
+  player.bleed = REVIVE.bleedOut;
+  player.reviveProgress = 0;
+  document.getElementById("downed").classList.remove("hidden");
+  chatSys("You are down — hold on!");
+}
+
+/** A teammate standing over you fills the revive bar. */
+function revivePlayerTick(b, dt) {
+  const speed = b.role === "medic" ? 1 / REVIVE.medicTime : 1 / REVIVE.time;
+  player.reviveProgress += dt * speed;
+  player.reviverName = b.name;
+  if (player.reviveProgress >= 1) {
+    player.downed = false;
+    player.reviveProgress = 0;
+    player.hp = REVIVE.hpOnRevive;
+    document.getElementById("downed").classList.add("hidden");
+    chatSys(`${b.name} revived you`);
+    toast("Back on your feet!");
+  }
+}
+
+function playerDie() {
+  player.alive = false;
+  player.downed = false;
+  player.reviveProgress = 0;
+  document.getElementById("downed").classList.add("hidden");
+  document.exitPointerLock();
+
+  const m = MODES[state.mode] || MODES.team;
+  if (m.respawn) {
+    player.respawnAt = time + 5;       // R-RSP-3 (5s)
+    document.getElementById("respawn").classList.remove("hidden");
+  } else {
+    // no respawn (Solo/Team Deathmatch, S&D, Battle Royale) — you spectate
+    state.spectating = true;
+    const alliesLeft = bots.some(b => b.team === "blue" && b.alive && !b.downed);
+    document.getElementById("specText").textContent =
+      alliesLeft ? "Watching your squad finish the fight…" : "Your side is wiped out…";
+    document.getElementById("eliminated").classList.remove("hidden");
+  }
+}
+function respawnPlayer() {
+  player.alive = true;
+  player.hp = player.maxHp;
+  player.pos.copy(BLUE_SPAWN).add(new THREE.Vector3(Math.random() * 8 - 4, 0, Math.random() * 6 - 3));
+  player.vel.set(0, 0, 0);
+  // R-RSP-2 / R-LDO-3: respawn with the bought loadout; loadout edits apply here
+  applyLoadout();
+  document.getElementById("respawn").classList.add("hidden");
+}
+
+// ============================================================
+//  AI  (Phase 3) — roles, difficulty-scaled tactics, teammates, revives
+//  R-AI-1: weak = rush → wait ~3s → shoot.  strong = cover, flank, grenades.
+// ============================================================
+const tmpDir = new THREE.Vector3();
+
+/** Move a bot toward a world point, with freeze slow + obstacle nudge. */
+function moveToward(b, dest, dt, speedMul = 1) {
+  tmpDir.subVectors(dest, b.pos); tmpDir.y = 0;
+  const d = tmpDir.length();
+  if (d < 0.4) return d;
+  tmpDir.divideScalar(d);
+  const slow = (b.frozenUntil && time < b.frozenUntil) ? 0.35 : 1;
+  const step = b.speed * slow * speedMul * dt;
+
+  const nx = b.pos.x + tmpDir.x * step;
+  const nz = b.pos.z + tmpDir.z * step;
+  // simple obstacle avoidance: if blocked, slide along the wall
+  if (!blockedAt(nx, nz)) { b.pos.x = nx; b.pos.z = nz; }
+  else if (!blockedAt(nx, b.pos.z)) b.pos.x = nx;
+  else if (!blockedAt(b.pos.x, nz)) b.pos.z = nz;
+  else { // fully stuck — sidestep
+    b.pos.x += -tmpDir.z * step * b.flankSign;
+    b.pos.z += tmpDir.x * step * b.flankSign;
+  }
+  return d;
+}
+
+function blockedAt(x, z) {
+  for (const c of colliders) {
+    if (x > c.min.x - 0.7 && x < c.max.x + 0.7 && z > c.min.z - 0.7 && z < c.max.z + 0.7) return true;
+  }
+  return false;
+}
+
+function updateBot(b, dt) {
+  // ----- downed teammates bleed out or wait for a revive (R-AI-3) -----
+  if (b.downed) {
+    b.bleed -= dt;
+    if (b.bleed <= 0) finishBotDeath(b);
+    b.mesh.position.copy(b.pos);
+    return;
+  }
+
+  if (!b.alive) {
+    if (time >= b.respawnAt) {
+      const base = b.team === "red" ? RED_SPAWN : BLUE_SPAWN;
+      b.pos.set(base.x + (Math.random() * 12 - 6), 0, base.z + (Math.random() * 8 - 4));
+      b.hp = b.maxHp; b.alive = true; b.mesh.visible = true;
+      b.seenAt = 0; b.ai = "advance"; b.coverPos = null;
+    }
+    return;
+  }
+
+  const D = DIFFICULTY[difficulty] || DIFFICULTY.recruit;
+  const role = b.roleData;
+
+  // medics top themselves and nearby friends up over time
+  if (b.role === "medic") {
+    b.healCd -= dt;
+    if (b.healCd <= 0) {
+      b.healCd = 2;
+      b.hp = Math.min(b.maxHp, b.hp + 8);
+      for (const o of bots) {
+        if (o.alive && !o.downed && o.team === b.team && o !== b && o.pos.distanceTo(b.pos) < 10)
+          o.hp = Math.min(o.maxHp, o.hp + 6);
+      }
+    }
+  }
+
+  // ----- allies: reviving the player beats everything (R-AI-3) -----
+  if (b.team === "blue" && player.downed) {
+    const wantsRevive = teamOrder === "revive" || b.role === "medic" ||
+                        b.pos.distanceTo(player.pos) < 45;
+    if (wantsRevive) {
+      const d = moveToward(b, player.pos, dt, 1.15);
+      faceAlong(b, player.pos);
+      if (d < REVIVE.range) revivePlayerTick(b, dt);
+      clampBot(b);
+      return;
+    }
+  }
+
+  // ----- allies: revive downed teammates too -----
+  if (b.team === "blue") {
+    const hurt = bots.find(o => o.downed && o.team === "blue" && o.pos.distanceTo(b.pos) < 30);
+    if (hurt && b.role === "medic") {
+      const d = moveToward(b, hurt.pos, dt, 1.1);
+      faceAlong(b, hurt.pos);
+      if (d < REVIVE.range) {
+        hurt.reviveProgress += dt / REVIVE.medicTime;
+        if (hurt.reviveProgress >= 1) reviveBot(hurt, b.name);
+      }
+      clampBot(b);
+      return;
+    }
+  }
+
+  // ----- pick the nearest visible enemy -----
+  let target = null, best = Infinity;
+  const oppTeam = b.team === "red" ? "blue" : "red";
+  if (b.team === "red" && player.alive && !player.downed) {
+    const d = b.pos.distanceTo(player.pos);
+    if (d < best) { best = d; target = { pos: player.pos, isPlayer: true }; }
+  }
+  for (const o of bots) {
+    if (!o.alive || o.downed || o.team !== oppTeam) continue;
+    const d = b.pos.distanceTo(o.pos);
+    if (d < best) { best = d; target = { pos: o.pos, bot: o }; }
+  }
+
+  // ----- no enemy: follow team orders / hold ground -----
+  if (!target) {
+    const dest = orderDestination(b);
+    if (dest) { moveToward(b, dest, dt); faceAlong(b, dest); }
+    clampBot(b);
+    return;
+  }
+
+  const dist = best;
+  const engage = role.engage;
+  const los = hasLOS(b.pos, target.pos);
+
+  // ----- rethink tactics periodically -----
+  b.aiTimer -= dt;
+  if (b.aiTimer <= 0) {
+    b.aiTimer = 0.8 + Math.random() * 0.8;
+    const hurtBadly = b.hp < b.maxHp * 0.45;
+
+    if (D.cover && hurtBadly) {
+      b.coverPos = findCover(b.pos, target.pos);
+      b.ai = b.coverPos ? "cover" : "engage";
+    } else if (D.flank && dist < engage * 2.2 && dist > 8 && Math.random() < 0.5) {
+      b.ai = "flank";
+    } else {
+      b.ai = "advance";
+    }
+  }
+
+  // ----- grenades: strong AI flushes you out of cover (R-AI-1) -----
+  b.nadeCd -= dt;
+  if (D.grenades && b.nadeCd <= 0 && dist < 40 && dist > 9) {
+    // throw when they're hiding, or occasionally when they're exposed
+    if (!los || Math.random() < 0.35) {
+      botThrowGrenade(b, target.pos);
+      b.nadeCd = 11 + Math.random() * 9;
+    } else {
+      b.nadeCd = 3;
+    }
+  }
+
+  // ----- act on the current tactic -----
+  let destination = null, speedMul = 1;
+  if (b.ai === "cover" && b.coverPos) {
+    destination = b.coverPos;
+    if (b.pos.distanceTo(b.coverPos) < 1.5 && b.hp > b.maxHp * 0.7) b.ai = "advance";
+  } else if (b.ai === "flank") {
+    // aim for a point off to the side of the target
+    const away = new THREE.Vector3().subVectors(b.pos, target.pos).setY(0).normalize();
+    const side = new THREE.Vector3(-away.z, 0, away.x).multiplyScalar(b.flankSign * 16);
+    destination = new THREE.Vector3().copy(target.pos).add(side);
+    speedMul = 1.1;
+  } else {
+    const order = orderDestination(b);
+    destination = (order && dist > engage) ? order : target.pos;
+  }
+
+  // close to preferred range, then hold
+  const wantCloser = dist > engage * 0.75 || !los;
+  if (destination && wantCloser) moveToward(b, destination, dt, speedMul * D.aggression);
+  faceAlong(b, target.pos);
+
+  // ----- shooting -----
+  if (los && dist < engage * 1.6) {
+    if (b.seenAt === 0) b.seenAt = time;
+    // Recruits hesitate ~3s after spotting you; elites fire almost at once.
+    if (time - b.seenAt >= D.reaction) {
+      b.cd -= dt;
+      if (b.cd <= 0) {
+        b.cd = b.role === "sniper" ? 1.5 : b.role === "heavy" ? 0.35 : 0.5;
+        botShoot(b, target, dist, D);
+      }
+    }
+  } else {
+    b.seenAt = 0;    // lost sight — must re-acquire (and re-hesitate)
+  }
+
+  clampBot(b);
+}
+
+// ============================================================
+//  ZIPLINES  (R-MAP-4 — the one thing you CAN ride)
+// ============================================================
+const ziplinePromptEl = document.getElementById("ziplinePrompt");
+
+/** Nearest zipline anchor you could grab right now. */
+function nearbyZipline() {
+  for (const z of ziplines) {
+    const d = Math.hypot(player.pos.x - z.start.x, player.pos.z - z.start.z);
+    if (d < 5) return z;
+  }
+  return null;
+}
+
+function updateZipline(dt) {
+  // riding: slide from start to end, then drop off
+  if (player.zip) {
+    const z = player.zip;
+    player.zipT += (dt * 22) / z.length;
+    if (player.zipT >= 1) { detachZipline(); return; }
+    const p = new THREE.Vector3().lerpVectors(z.start, z.end, player.zipT);
+    player.pos.set(p.x, p.y - 1.9, p.z);   // hang below the cable
+    player.vel.set(0, 0, 0);
+    player.onGround = false;
+    if (keys["KeyE"] && player.zipT > 0.08) detachZipline();   // bail out early
+    ziplinePromptEl.classList.add("hidden");
+    return;
+  }
+
+  if (!player.alive || player.downed) {
+    ziplinePromptEl.classList.add("hidden");
+    return;
+  }
+  // note: vehicles exist on every map, ziplines only on forest — so this check
+  // must run even when there are no ziplines here.
+  const z = ziplines.length ? nearbyZipline() : null;
+  ziplinePromptEl.classList.toggle("hidden", !z);
+  if (z && keys["KeyE"]) attachZipline(z);
+  else vehicleNudge();
+}
+
+/**
+ * Vehicles are scenery: they block you, but pressing E at one just tells you
+ * so — only ziplines are rideable (R-MAP-4).
+ */
+let vehicleHintAt = 0;
+function vehicleNudge() {
+  if (!keys["KeyE"] || player.zip || time < vehicleHintAt) return;
+  for (const v of vehicles) {
+    const cx = (v.min.x + v.max.x) / 2, cz = (v.min.z + v.max.z) / 2;
+    if (Math.hypot(player.pos.x - cx, player.pos.z - cz) < 6) {
+      toast("You can't drive vehicles — only ziplines can be ridden");
+      vehicleHintAt = time + 4;
+      return;
+    }
+  }
+}
+
+function attachZipline(z) {
+  player.zip = z;
+  player.zipT = 0;
+  player.sliding = false;
+  toast("Riding the zipline — press E to drop off");
+}
+function detachZipline() {
+  player.zip = null;
+  player.zipT = 0;
+  player.vel.y = 0;
+}
+
+/** Player holding E over a downed teammate revives them. */
+const revivePromptEl = document.getElementById("revivePrompt");
+const revivePromptText = document.getElementById("revivePromptText");
+const reviveFillMe = document.getElementById("reviveFillMe");
+
+function updatePlayerReviving(dt) {
+  if (!player.alive || player.downed) { revivePromptEl.classList.add("hidden"); return; }
+  const near = bots.find(b => b.downed && b.team === "blue" && b.pos.distanceTo(player.pos) < REVIVE.range);
+  if (!near) {
+    revivePromptEl.classList.add("hidden");
+    player.reviveTargetProgress = 0;
+    return;
+  }
+  revivePromptEl.classList.remove("hidden");
+  revivePromptText.textContent = `Revive ${near.name}`;
+
+  if (keys["KeyE"]) {
+    const speed = player.role === "medic" ? 1 / REVIVE.medicTime : 1 / REVIVE.time;
+    player.reviveTargetProgress += dt * speed;
+    if (player.reviveTargetProgress >= 1) {
+      reviveBot(near, "You");
+      player.reviveTargetProgress = 0;
+      P.addXp(XP.assist);
+      xpPopup(`+${XP.assist} XP`);
+    }
+  } else {
+    player.reviveTargetProgress = Math.max(0, player.reviveTargetProgress - dt);
+  }
+  reviveFillMe.style.width = (player.reviveTargetProgress * 100) + "%";
+}
+
+/** While you're down: bleed out, show the timer + any incoming revive. */
+const bleedCountEl = document.getElementById("bleedCount");
+const downedHintEl = document.getElementById("downedHint");
+const reviveFillEl = document.getElementById("reviveFill");
+
+function updateDowned(dt) {
+  player.bleed -= dt;
+  bleedCountEl.textContent = Math.max(0, Math.ceil(player.bleed));
+  reviveFillEl.style.width = (Math.min(1, player.reviveProgress) * 100) + "%";
+
+  const helper = bots.find(b => b.team === "blue" && b.alive && !b.downed &&
+                                b.pos.distanceTo(player.pos) < REVIVE.range);
+  downedHintEl.textContent = helper
+    ? `${helper.name} is reviving you…`
+    : (bots.some(b => b.team === "blue" && b.alive && !b.downed)
+        ? "A teammate is on the way — press Enter to call for help"
+        : "No teammates left…");
+
+  // decay progress if nobody is standing over you
+  if (!helper) player.reviveProgress = Math.max(0, player.reviveProgress - dt * 0.5);
+  if (player.bleed <= 0) playerDie();
+}
+
+function clampBot(b) {
+  const lim = MAP - 3;
+  b.pos.x = Math.max(-lim, Math.min(lim, b.pos.x));
+  b.pos.z = Math.max(-lim, Math.min(lim, b.pos.z));
+  b.mesh.position.copy(b.pos);
+}
+function faceAlong(b, at) {
+  b.mesh.rotation.y = Math.atan2(at.x - b.pos.x, at.z - b.pos.z);
+}
+
+/** Where the current chat order sends this bot (R-AI-4). */
+function orderDestination(b) {
+  if (b.team !== "blue") return null;
+  switch (teamOrder) {
+    case "attack":  return orderPoint || RED_SPAWN;
+    case "defend":  return orderPoint || BLUE_SPAWN;
+    case "regroup": return player.pos;
+    case "fallback": return BLUE_SPAWN;
+    default: return null;
+  }
+}
+
+function botShoot(b, target, dist, D) {
+  const role = b.roleData;
+  const gun = GUNS[role.gun] || GUNS.rifle;
+
+  // accuracy: role skill × difficulty, falling off with range
+  const acc = Math.min(0.95, role.accuracy * D.accuracy * 0.6 - Math.min(0.3, dist / 260));
+  if (Math.random() > acc) return;    // missed
+
+  const dmg = gun.dmg * (role.key === "sniper" ? 0.45 : 0.62);  // bots hit softer than players
+
+  if (target.isPlayer) damagePlayer(dmg, b.pos);
+  else if (target.bot) damageBotFromBot(target.bot, dmg);
+}
+
+/** Bot-on-bot damage — never touches the player's coins/XP. */
+function damageBotFromBot(t, dmg) {
+  if (!t.alive || t.downed) return;
+  const dr = t.roleData ? t.roleData.dr : 0;
+  t.hp -= dmg * (1 - dr);
+  if (t.hp <= 0) downOrKillBot(t);
+}
+
+function botThrowGrenade(b, at) {
+  const u = UTILS.frag;
+  const from = new THREE.Vector3(b.pos.x, 1.6, b.pos.z);
+  const to = new THREE.Vector3(at.x, 0, at.z);
+  const flat = new THREE.Vector3().subVectors(to, from); flat.y = 0;
+  const dist = flat.length();
+  flat.normalize();
+
+  const mesh = new THREE.Mesh(
+    new THREE.SphereGeometry(0.22, 10, 8),
+    new THREE.MeshStandardMaterial({ color: u.color, emissive: u.color, emissiveIntensity: 0.3 })
+  );
+  mesh.position.copy(from);
+  scene.add(mesh);
+
+  // lob it so it lands roughly on target
+  const speed = Math.min(30, 9 + dist * 0.8);
+  projectiles.push({
+    key: "frag", u, mesh,
+    pos: from.clone(),
+    vel: flat.multiplyScalar(speed).add(new THREE.Vector3(0, 7, 0)),
+    fuse: u.fuse + 0.4,
+    fromTeam: b.team,          // won't hurt its own side
+  });
+  if (b.team === "red" && b.pos.distanceTo(player.pos) < 45) chatSys(`${b.name} lobs a grenade!`);
+}
+
+// ============================================================
+//  CHAT + TEAM COMMANDS  (R-AI-4) — Enter to talk, no leaders:
+//  anyone can call it, teammates read it and answer.
+// ============================================================
+let teamOrder = null;          // attack | defend | regroup | fallback | revive | null
+let orderPoint = null;         // world point tied to the order
+let chatOpen = false;
+
+const chatLogEl = document.getElementById("chatLog");
+const chatBoxEl = document.getElementById("chatBox");
+const chatInputEl = document.getElementById("chatInput");
+
+function chatPush(who, text, cls) {
+  const el = document.createElement("div");
+  el.className = `chat-msg ${cls}`;
+  el.innerHTML = who ? `<span class="who">${who}</span>${text}` : text;
+  chatLogEl.appendChild(el);
+  while (chatLogEl.children.length > 6) chatLogEl.removeChild(chatLogEl.firstChild);
+  setTimeout(() => el.remove(), 9000);
+}
+const chatSys = (t) => chatPush("", t, "sys");
+const chatAlly = (name, t) => chatPush(name + ":", t, "ally");
+
+function openChat() {
+  if (chatOpen || !running) return;
+  chatOpen = true;
+  chatBoxEl.classList.remove("hidden");
+  chatInputEl.value = "";
+  chatInputEl.focus();
+  document.exitPointerLock();
+  for (const k in keys) keys[k] = false;    // don't keep walking while typing
+}
+function closeChat() {
+  if (!chatOpen) return;
+  chatOpen = false;
+  chatBoxEl.classList.add("hidden");
+  chatInputEl.blur();
+  if (running && player.alive) canvas.requestPointerLock();
+}
+
+/** Read an order out of free text and tell the squad. */
+function sendChat(text) {
+  const msg = text.trim();
+  if (!msg) return;
+  chatPush("You:", msg, "you");
+
+  const t = msg.toLowerCase();
+  const allies = bots.filter(b => b.team === "blue" && b.alive && !b.downed);
+  const speaker = allies.length ? allies[(Math.random() * allies.length) | 0] : null;
+  const reply = (line) => { if (speaker) setTimeout(() => chatAlly(speaker.name, line), 350); };
+
+  if (/\b(attack|push|advance|go|charge)\b/.test(t)) {
+    teamOrder = "attack"; orderPoint = null;
+    reply("Pushing up — on me!");
+    toast("Squad: ATTACKING");
+  } else if (/\b(defend|hold|guard|stay)\b/.test(t)) {
+    teamOrder = "defend"; orderPoint = player.pos.clone();
+    reply("Holding this position.");
+    toast("Squad: DEFENDING here");
+  } else if (/\b(regroup|group|follow|come|on me|with me)\b/.test(t)) {
+    teamOrder = "regroup"; orderPoint = null;
+    reply("Regrouping on you.");
+    toast("Squad: REGROUPING on you");
+  } else if (/\b(revive|help|medic|res|save)\b/.test(t)) {
+    teamOrder = "revive"; orderPoint = null;
+    reply(player.downed ? "Coming to get you — hold on!" : "Copy, watching for downs.");
+    toast("Squad: REVIVE priority");
+  } else if (/\b(fall ?back|retreat|back off|withdraw)\b/.test(t)) {
+    teamOrder = "fallback"; orderPoint = null;
+    reply("Falling back!");
+    toast("Squad: FALLING BACK");
+  } else {
+    // not an order — just squad chatter
+    const chatter = ["Copy that.", "Roger.", "Understood.", "On it.", "Got your back."];
+    reply(chatter[(Math.random() * chatter.length) | 0]);
+  }
+}
+
+chatInputEl.addEventListener("keydown", (e) => {
+  e.stopPropagation();
+  if (e.code === "Enter" || e.code === "NumpadEnter") { sendChat(chatInputEl.value); closeChat(); }
+  else if (e.code === "Escape") closeChat();
+});
+
+// ============================================================
+//  GAME STATE / MODES
+// ============================================================
+let running = false;
+let difficulty = "recruit"; // recruit | veteran | elite — scales enemy AI (R-AI-1)
+const state = { mode: "team", teamSize: 3, blueScore: 0, redScore: 0, target: 30, wave: 0, waveKills: 0, waveGoal: 0 };
+
+function startMatch(mode, teamSize, roleKey, diffKey, mapKey) {
+  const m = MODES[mode] || MODES.team;
+  state.mode = mode; state.teamSize = teamSize;
+  state.blueScore = 0; state.redScore = 0; state.wave = 0; state.waveKills = 0;
+  state.target = m.target || 0;
+  state.spectating = false;
+  difficulty = effectiveDifficulty(diffKey || difficulty);
+  applyRole(roleKey || player.role);          // R-ROL-1
+  applySkin();                                 // R-PRG-4 (cosmetic)
+  teamOrder = null; orderPoint = null;
+  chatLogEl.innerHTML = "";
+  closeChat();
+  player.downed = false; player.reviveProgress = 0; player.reviveTargetProgress = 0;
+  document.getElementById("downed").classList.add("hidden");
+  document.getElementById("revivePrompt").classList.add("hidden");
+  document.getElementById("eliminated").classList.add("hidden");
+  document.getElementById("respawn").classList.add("hidden");
+
+  // build the voted map, then the objectives that sit on it
+  buildMap(mapKey || currentMap);
+
+  // clear old bots
+  for (const b of bots) scene.remove(b.mesh);
+  bots.length = 0;
+
+  if (mode === "wave") {
+    // co-op: a few allies + endless scaling waves (R-MOD-3)
+    for (let i = 0; i < Math.max(1, teamSize - 1); i++) spawnBot("blue");
+    nextWave();
+  } else if (!m.teams) {
+    // solo modes (FFA / Solo DM / Gun Game / Battle Royale): everyone is an enemy.
+    // FFA and BR are uncapped — they scale past the 5v5 limit (R-MOD-2).
+    const count = m.uncapped ? Math.max(6, teamSize * 3) : teamSize * 2;
+    for (let i = 0; i < count; i++) spawnBot("red");
+    modeLabel = m.name.toUpperCase();
+  } else {
+    // team modes: allies + enemies
+    for (let i = 0; i < teamSize - 1; i++) spawnBot("blue");
+    for (let i = 0; i < teamSize; i++) spawnBot("red");
+    modeLabel = m.name.toUpperCase();
+  }
+
+  // solo-mode bots start spread across the map rather than in one base
+  if (!m.teams && mode !== "wave") {
+    for (const b of bots) {
+      b.pos.set((Math.random() * 2 - 1) * (MAP - 20), 0, (Math.random() * 2 - 1) * (MAP - 20));
+      b.mesh.position.copy(b.pos);
+    }
+  }
+
+  OBJ.setupObjectives(mode);
+
+  player.alive = true;
+  player.pos.copy(BLUE_SPAWN);
+  player.kills = 0;
+  applyLoadout();                 // equips bought loadout + armor (R-LDO-3, R-RSP-2)
+  if (mode === "gun") applyGunGameWeapon();
+  player.hp = player.maxHp;
+  // clear leftover throwables/effects from a previous match
+  for (const p of projectiles) scene.remove(p.mesh);
+  projectiles.length = 0;
+  for (const e of effects) if (e.mesh) scene.remove(e.mesh);
+  effects.length = 0;
+
+  document.getElementById("menu").classList.add("hidden");
+  document.getElementById("hud").classList.remove("hidden");
+  running = true;
+  canvas.requestPointerLock();
+  player.zip = null; player.zipT = 0;
+  toast(`${m.name} — ${MAPS[currentMap].name}, ${TIMES[currentTime].name}, ${WEATHER[currentWeather].name}`);
+  chatSys(m.desc);
+  if (!m.respawn) chatSys("No respawns in this mode — stay alive.");
+}
+
+const DIFF_ORDER = ["recruit", "veteran", "elite"];
+/**
+ * Final enemy difficulty = your pick, raised by your win streak (R-RNK-4)
+ * and capped for new players by matchmaking protection (R-RNK-3).
+ */
+function effectiveDifficulty(picked) {
+  let i = Math.max(0, DIFF_ORDER.indexOf(picked));
+  const streak = profile.stats.streak || 0;
+  const bump = streakHardening(streak);
+  if (bump) i = Math.min(DIFF_ORDER.length - 1, i + bump);
+
+  if (P.protectedPlayer()) i = Math.min(i, 0);   // shielded: Recruit only
+  return DIFF_ORDER[i];
+}
+
+/** Paint the viewmodel with the equipped skin. Cosmetic only (R-PRG-4). */
+function applySkin() {
+  const c = P.skinColor();
+  viewGun.material.color.setHex(c);
+  const s = SKINS[profile.skin];
+  // higher rarities get a subtle glow so they read as special
+  const rank = s ? RARITY[s.rarity].order : 0;
+  viewGun.material.emissive.setHex(rank >= 3 ? c : 0x000000);
+  viewGun.material.emissiveIntensity = rank >= 4 ? 0.5 : rank >= 3 ? 0.25 : 0;
+}
+
+/** Gun Game: force the current ladder weapon into the primary slot. */
+function applyGunGameWeapon() {
+  const key = OBJ.gunGameWeapon();
+  player.loadout[0] = key;
+  const s = statsFor(key);
+  player.ammo[key] = s.mag;
+  player.reserve[key] = GUNS[key].reserve;
+  player.slot = 0;
+}
+
+function nextWave() {
+  state.wave++;
+  state.waveKills = 0;
+  const count = 3 + state.wave;      // scaling (R-MOD-3)
+  state.waveGoal = count;
+  // waves get smarter as they get bigger
+  difficulty = state.wave >= 7 ? "elite" : state.wave >= 4 ? "veteran" : "recruit";
+  for (let i = 0; i < count; i++) spawnBot("red");
+  modeLabel = "WAVE " + state.wave;
+  toast(`Wave ${state.wave} — ${count} ${DIFFICULTY[difficulty].name} enemies`);
+}
+
+function checkWin() {
+  const m = MODES[state.mode] || MODES.team;
+
+  if (state.mode === "wave") {
+    // wave mode: red bots don't respawn; clear the wave -> next one
+    const anyRedAlive = bots.some(b => b.team === "red" && b.alive);
+    if (!anyRedAlive) nextWave();
+    // co-op loss: everyone on your side is gone
+    if (!player.alive && !bots.some(b => b.team === "blue" && b.alive && !b.downed)) endMatch(false);
+    return;
+  }
+
+  // score targets (Team Battle, FFA, CTF, Domination)
+  if (m.target) {
+    if (state.blueScore >= m.target) return endMatch(true);
+    if (state.redScore >= m.target) return endMatch(false);
+  }
+
+  // elimination modes: last side standing wins (R-RSP-3 — no respawn)
+  if (!m.respawn) {
+    const redUp = bots.some(b => b.team === "red" && b.alive && !b.downed);
+    const blueUp = (player.alive && !player.downed) ||
+                   bots.some(b => b.team === "blue" && b.alive && !b.downed);
+    if (!redUp) return endMatch(true);
+    if (!blueUp) return endMatch(false);
+  }
+}
+
+/** Objectives call this to score; Domination passes fractional ticks. */
+function addScore(team, n) {
+  if (team === "blue") state.blueScore += n; else state.redScore += n;
+}
+/** Objectives call this to end the match outright (bomb detonate/defuse). */
+function objectiveWin(team) { endMatch(team === "blue"); }
+/** A bot killed by the battle-royale zone. */
+function zoneKill(b) {
+  b.alive = false; b.downed = false; b.mesh.visible = false; b.respawnAt = Infinity;
+}
+
+function endMatch(won) {
+  if (!running) return;              // don't double-resolve
+  running = false;
+  state.spectating = false;
+  document.exitPointerLock();
+
+  // RR from performance, streak coins, rank-ups and skin unlocks (R-RNK-2/4)
+  const result = P.recordMatch(won, {
+    kills: player.kills,
+    assists: player.assists,
+    score: state.blueScore,
+  });
+  toast(won ? `VICTORY! +${COINS.win} coins` : "DEFEAT");
+  renderHeader();
+
+  setTimeout(() => {
+    document.getElementById("hud").classList.add("hidden");
+    document.getElementById("respawn").classList.add("hidden");
+    document.getElementById("eliminated").classList.add("hidden");
+    document.getElementById("downed").classList.add("hidden");
+    objBannerEl.classList.remove("show");
+    showResult(result);
+  }, 1800);
+}
+
+// ---------- post-match result + rank-up celebration ----------
+const resultScreen = document.getElementById("resultScreen");
+function showResult(r) {
+  const title = document.getElementById("resultTitle");
+  title.textContent = r.won ? "VICTORY" : "DEFEAT";
+  title.className = r.won ? "win" : "lose";
+
+  document.getElementById("resultRrDelta").textContent =
+    `${r.rrDelta >= 0 ? "+" : ""}${r.rrDelta} RR`;
+
+  const ri = P.rankInfo();
+  document.getElementById("resultRrFill").style.width = ri.pct + "%";
+  document.getElementById("resultRankLine").textContent =
+    ri.next ? `${ri.rank.name} — ${ri.into} / ${ri.need} RR` : `${ri.rank.name} — MAX RANK`;
+
+  // rank up
+  const up = document.getElementById("resultRankUp");
+  up.classList.toggle("hidden", !r.rankedUp);
+  if (r.rankedUp) {
+    document.getElementById("resultRankBadge").style.background = r.rank.color;
+    document.getElementById("resultRankName").textContent = r.rank.name;
+  }
+
+  // skins unlocked by this match
+  const skinBox = document.getElementById("resultSkins");
+  skinBox.innerHTML = "";
+  for (const k of r.newSkins) {
+    const s = SKINS[k]; if (!s) continue;
+    const rar = RARITY[s.rarity];
+    const el = document.createElement("div");
+    el.className = "skin-unlock";
+    el.style.color = rar.color;
+    el.style.borderColor = rar.color + "88";
+    el.style.background = rar.color + "18";
+    el.textContent = `${rar.name.toUpperCase()} SKIN UNLOCKED — ${s.name}`;
+    skinBox.appendChild(el);
+  }
+
+  // extras: streak, bonus coins, level up
+  const extras = [];
+  if (r.won && r.streak > 1) extras.push(`🔥 <b>${r.streak}</b>-win streak — enemies will be tougher`);
+  if (r.bonusCoins) extras.push(`Streak bonus: <b>+${r.bonusCoins}</b> coins`);
+  if (!r.won && r.streak === 0) extras.push(`Win streak reset`);
+  if (r.leveledUp) extras.push(`Level up! Now <b>Lv ${P.level()}</b>`);
+  document.getElementById("resultExtras").innerHTML = extras.join("<br>");
+
+  resultScreen.classList.remove("hidden");
+}
+document.getElementById("resultClose").addEventListener("click", () => {
+  resultScreen.classList.add("hidden");
+  document.getElementById("menu").classList.remove("hidden");
+  renderHeader();
+});
+
+/**
+ * Respawn gating. Wave enemies never come back, and in elimination modes
+ * (Team/Solo Deathmatch, S&D, Battle Royale) nobody comes back (R-RSP-3).
+ */
+function tuneRespawn(b) {
+  const m = MODES[state.mode] || MODES.team;
+  if (state.mode === "wave" && b.team === "red") b.respawnAt = Infinity;
+  else if (!m.respawn) b.respawnAt = Infinity;
+}
+
+// ============================================================
+//  HUD / helpers
+// ============================================================
+let toastT = 0;
+const toastEl = document.getElementById("toast");
+function toast(msg) { toastEl.textContent = msg; toastEl.classList.add("show"); toastT = 2.5; }
+
+const hpFill = document.getElementById("hpFill");
+const stFill = document.getElementById("stFill");
+const hpText = document.getElementById("hpText");
+const ammoNow = document.getElementById("ammoNow");
+const ammoReserve = document.getElementById("ammoReserve");
+const weaponNameEl = document.getElementById("weaponName");
+const coinsEl = document.getElementById("coins");
+const crosshairEl = document.getElementById("crosshair");
+const blueScoreEl = document.getElementById("blueScore");
+const redScoreEl = document.getElementById("redScore");
+const respawnCount = document.getElementById("respawnCount");
+const matchLabelEl = document.getElementById("matchLabel");
+const objBannerEl = document.getElementById("objBanner");
+let modeLabel = "TEAM";
+const minimap = document.getElementById("minimap");
+const mmCtx = minimap.getContext("2d");
+
+const armorRow = document.getElementById("armorRow");
+const arFill = document.getElementById("arFill");
+const arText = document.getElementById("arText");
+const slotBar = document.getElementById("slotBar");
+
+/**
+ * Writing to the DOM every frame is the single most expensive thing the HUD
+ * does, so each field is only touched when its value actually changes.
+ */
+const hudLast = {};
+function setText(el, v) { if (hudLast[el.id] !== v) { hudLast[el.id] = v; el.textContent = v; } }
+function setWidth(el, v) {
+  const key = el.id + ":w";
+  if (hudLast[key] !== v) { hudLast[key] = v; el.style.width = v; }
+}
+
+function updateHUD() {
+  const k = curKey();
+  setWidth(hpFill, (player.hp / player.maxHp * 100).toFixed(1) + "%");
+  setText(hpText, Math.ceil(player.hp));
+  setWidth(stFill, player.stamina.toFixed(0) + "%");
+
+  // armor bar only when you own armor
+  armorRow.classList.toggle("hidden", player.maxArmor <= 0);
+  if (player.maxArmor > 0) {
+    setWidth(arFill, (player.armor / player.maxArmor * 100).toFixed(1) + "%");
+    setText(arText, Math.ceil(player.armor));
+  }
+
+  // ammo / utility readout
+  if (isUtilSlot()) {
+    const u = UTILS[k];
+    setText(ammoNow, player.utilUses);
+    setText(ammoReserve, u ? u.uses : 0);
+    setText(weaponNameEl, (u ? u.name : "—") + (player.utilCd > 0 ? ` · ${Math.ceil(player.utilCd)}s` : ""));
+  } else if (GUNS[k]?.melee) {
+    setText(ammoNow, "∞");
+    setText(ammoReserve, "—");
+    setText(weaponNameEl, GUNS[k].name);
+  } else {
+    const s = statsFor(k);
+    setText(ammoNow, player.reloading > 0 ? "--" : player.ammo[k]);
+    setText(ammoReserve, player.reserve[k]);
+    const lv = s.level > 1 ? ` Lv${s.level}` : "";
+    setText(weaponNameEl, s.name + lv + (player.ads ? " · ADS" : ""));
+  }
+
+  setText(coinsEl, profile.coins);
+  setText(blueScoreEl, state.mode === "wave" ? player.kills : Math.floor(state.blueScore));
+  setText(redScoreEl, state.mode === "wave" ? state.wave : Math.floor(state.redScore));
+  setText(matchLabelEl, `${modeLabel} · ${ROLES[player.role].name}`);
+
+  // objective banner (flags / bomb / zone / control points)
+  const banner = OBJ.objectiveBanner();
+  setText(objBannerEl, banner);
+  objBannerEl.classList.toggle("show", !!banner);
+
+  drawSlotBar();
+
+  // crosshair grows with spread
+  const moving = player.vel.x * player.vel.x + player.vel.z * player.vel.z > 4;
+  let size = 26 + (moving ? 14 : 0) + (!player.onGround ? 16 : 0);
+  if (player.ads) size = 14;
+  if (hudLast.crosshair !== size) {
+    hudLast.crosshair = size;
+    crosshairEl.style.width = size + "px";
+    crosshairEl.style.height = size + "px";
+  }
+}
+
+let slotBarSig = "";
+function drawSlotBar() {
+  const cdPct = player.utilCd > 0 ? Math.ceil(player.utilCd) : 0;
+  const sig = player.loadout.join("|") + player.slot + cdPct + player.utilUses;
+  if (sig === slotBarSig) return;      // only rebuild when something changed
+  slotBarSig = sig;
+  let h = "";
+  for (let i = 0; i < 4; i++) {
+    const key = player.loadout[i];
+    const nm = i === 3 ? (UTILS[key]?.name || "—") : (GUNS[key]?.name || "—");
+    const isCd = i === 3 && player.utilCd > 0;
+    h += `<div class="slot-pip ${i === player.slot ? "active" : ""}">
+      <b>${i + 1}</b>${nm}
+      ${i === 3 ? `<span style="color:#ffd257">×${player.utilUses}</span>` : ""}
+      ${isCd ? `<span class="cd"></span><span class="cd-txt">${cdPct}</span>` : ""}
+    </div>`;
+  }
+  slotBar.innerHTML = h;
+}
+
+function drawMinimap() {
+  const s = minimap.width, half = MAP;
+  mmCtx.clearRect(0, 0, s, s);
+  mmCtx.fillStyle = "rgba(8,12,18,0.6)"; mmCtx.fillRect(0, 0, s, s);
+  const toMM = (x, z) => [(x / half * 0.5 + 0.5) * s, (z / half * 0.5 + 0.5) * s];
+  // spawns
+  let [bx, bz] = toMM(BLUE_SPAWN.x, BLUE_SPAWN.z);
+  mmCtx.fillStyle = "rgba(74,157,255,0.4)"; mmCtx.beginPath(); mmCtx.arc(bx, bz, 10, 0, 7); mmCtx.fill();
+  let [rx, rz] = toMM(RED_SPAWN.x, RED_SPAWN.z);
+  mmCtx.fillStyle = "rgba(255,90,90,0.4)"; mmCtx.beginPath(); mmCtx.arc(rx, rz, 10, 0, 7); mmCtx.fill();
+  // objectives: bomb sites, control points, flags, safe zone
+  for (const s of OBJ.obj.sites) {
+    const [x, z] = toMM(s.pos.x, s.pos.z);
+    mmCtx.strokeStyle = s.functional ? "#ffd257" : "rgba(200,180,120,0.5)";
+    mmCtx.lineWidth = 1.5;
+    mmCtx.beginPath(); mmCtx.arc(x, z, 6, 0, 7); mmCtx.stroke();
+    mmCtx.fillStyle = mmCtx.strokeStyle;
+    mmCtx.font = "bold 8px sans-serif"; mmCtx.fillText(s.name, x - 2, z + 3);
+  }
+  for (const p of OBJ.obj.points) {
+    const [x, z] = toMM(p.pos.x, p.pos.z);
+    mmCtx.fillStyle = p.owner === "blue" ? "#4a9dff" : p.owner === "red" ? "#ff5a5a" : "#9aa6b2";
+    mmCtx.beginPath(); mmCtx.arc(x, z, 6, 0, 7); mmCtx.fill();
+    mmCtx.fillStyle = "#0d1117"; mmCtx.font = "bold 8px sans-serif"; mmCtx.fillText(p.name, x - 2, z + 3);
+  }
+  if (OBJ.obj.flags) {
+    for (const f of [OBJ.obj.flags.blue, OBJ.obj.flags.red]) {
+      const [x, z] = toMM(f.pos.x, f.pos.z);
+      mmCtx.fillStyle = f.team === "blue" ? "#4a9dff" : "#ff5a5a";
+      mmCtx.fillRect(x - 3, z - 5, 6, 10);
+    }
+  }
+  if (OBJ.obj.zone) {
+    const [cx, cz] = toMM(OBJ.obj.zone.center.x, OBJ.obj.zone.center.z);
+    mmCtx.strokeStyle = "#64b5ff"; mmCtx.lineWidth = 1.5;
+    mmCtx.beginPath();
+    mmCtx.arc(cx, cz, OBJ.obj.zone.radius / MAP * 0.5 * s, 0, 7);
+    mmCtx.stroke();
+  }
+
+  // bots
+  for (const b of bots) {
+    if (!b.alive) continue;
+    const [x, z] = toMM(b.pos.x, b.pos.z);
+    mmCtx.fillStyle = b.team === "red" ? "#ff5a5a" : "#4a9dff";
+    mmCtx.fillRect(x - 2, z - 2, 4, 4);
+  }
+  // player + facing
+  const [px, pz] = toMM(player.pos.x, player.pos.z);
+  mmCtx.save();
+  mmCtx.translate(px, pz); mmCtx.rotate(-player.yaw);
+  mmCtx.fillStyle = "#eafff2";
+  mmCtx.beginPath(); mmCtx.moveTo(0, -6); mmCtx.lineTo(4, 5); mmCtx.lineTo(-4, 5); mmCtx.closePath(); mmCtx.fill();
+  mmCtx.restore();
+}
+
+// ============================================================
+//  MENU WIRING
+// ============================================================
+let selMode = "team", selSize = 3, selRole = "rusher", selDiff = "recruit";
+let selTime = "random", selWeather = "random";
+
+// time of day + weather pickers (R-MAP-5)
+document.querySelectorAll(".time-btn").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll(".time-btn").forEach(x => x.classList.remove("active"));
+  b.classList.add("active"); selTime = b.dataset.time;
+}));
+document.querySelectorAll(".wx-btn").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll(".wx-btn").forEach(x => x.classList.remove("active"));
+  b.classList.add("active"); selWeather = b.dataset.wx;
+}));
+const pick = (arr) => arr[(Math.random() * arr.length) | 0];
+
+// mode picker
+const modeDescEl = document.getElementById("modeDesc");
+function refreshModeDesc() {
+  const m = MODES[selMode];
+  const rules = [];
+  rules.push(m.respawn ? "respawns on" : "NO respawns");
+  if (m.uncapped) rules.push("no player cap");
+  if (m.objective === "flags") rules.push("flags");
+  if (m.bombSites) rules.push("bomb sites");
+  modeDescEl.textContent = `${m.desc}  (${rules.join(" · ")})`;
+}
+
+// role picker
+const roleDescEl = document.getElementById("roleDesc");
+document.querySelectorAll(".role-btn").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll(".role-btn").forEach(x => x.classList.remove("active"));
+  b.classList.add("active"); selRole = b.dataset.role;
+  const r = ROLES[selRole];
+  roleDescEl.textContent = `${r.desc}  —  ${r.perk}`;
+}));
+roleDescEl.textContent = `${ROLES.rusher.desc}  —  ${ROLES.rusher.perk}`;
+
+// difficulty picker
+const diffDescEl = document.getElementById("diffDesc");
+document.querySelectorAll(".diff-btn").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll(".diff-btn").forEach(x => x.classList.remove("active"));
+  b.classList.add("active"); selDiff = b.dataset.diff;
+  diffDescEl.textContent = DIFFICULTY[selDiff].desc;
+}));
+diffDescEl.textContent = DIFFICULTY.recruit.desc;
+document.querySelectorAll(".mode-btn").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll(".mode-btn").forEach(x => x.classList.remove("active"));
+  b.classList.add("active"); selMode = b.dataset.mode;
+  refreshModeDesc();
+}));
+refreshModeDesc();
+document.querySelectorAll(".size-btn").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll(".size-btn").forEach(x => x.classList.remove("active"));
+  b.classList.add("active"); selSize = Number(b.dataset.size);
+}));
+document.querySelectorAll(".ctl-btn").forEach(b => b.addEventListener("click", () => {
+  document.querySelectorAll(".ctl-btn").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  if (b.dataset.ctl === "mobile") toast("Mobile controls arrive in a later phase — using PC for now.");
+}));
+// ---------- map voting (R-MAP-2) ----------
+const voteScreen = document.getElementById("voteScreen");
+const voteOptions = document.getElementById("voteOptions");
+const voteResult = document.getElementById("voteResult");
+let voteLocked = false;
+
+function openMapVote() {
+  voteLocked = false;
+  voteResult.textContent = "";
+  voteOptions.innerHTML = "";
+  document.getElementById("menu").classList.add("hidden");
+  voteScreen.classList.remove("hidden");
+
+  for (const key of MAP_KEYS) {
+    const def = MAPS[key];
+    const el = document.createElement("button");
+    el.className = "vote-opt";
+    el.dataset.map = key;
+    el.innerHTML = `
+      <div class="swatch" style="background:linear-gradient(160deg,#${def.sky.toString(16).padStart(6,"0")},#${def.ground.toString(16).padStart(6,"0")})"></div>
+      <b>${def.name}</b>
+      <small>${def.desc}</small>
+      <span class="tally"></span>`;
+    el.addEventListener("click", () => castVote(key));
+    voteOptions.appendChild(el);
+  }
+}
+
+function castVote(playerPick) {
+  if (voteLocked) return;
+  voteLocked = true;
+
+  // your squad votes too — how many depends on the mode's team size
+  const squad = Math.max(1, selSize - 1) + 2;
+  const tally = {};
+  for (const k of MAP_KEYS) tally[k] = 0;
+  tally[playerPick] += 1;
+  for (let i = 0; i < squad; i++) tally[MAP_KEYS[(Math.random() * MAP_KEYS.length) | 0]]++;
+
+  // highest tally wins; ties break toward the player's pick
+  let winner = playerPick;
+  for (const k of MAP_KEYS) if (tally[k] > tally[winner]) winner = k;
+
+  voteOptions.querySelectorAll(".vote-opt").forEach(el => {
+    const k = el.dataset.map;
+    el.querySelector(".tally").textContent = `${tally[k]} vote${tally[k] === 1 ? "" : "s"}`;
+    el.classList.toggle("picked", k === winner);
+  });
+  voteResult.textContent = `${MAPS[winner].name} wins the vote — deploying…`;
+
+  setTimeout(() => {
+    voteScreen.classList.add("hidden");
+    // "Random" rolls fresh conditions every match (R-MAP-5)
+    currentTime = selTime === "random" ? pick(TIME_KEYS) : selTime;
+    currentWeather = selWeather === "random" ? pick(WEATHER_KEYS) : selWeather;
+    startMatch(selMode, selSize, selRole, selDiff, winner);
+  }, 1400);
+}
+
+document.getElementById("playBtn").addEventListener("click", openMapVote);
+
+// Armory (shop + loadout)
+initShop(toast);
+
+// Objectives module gets a small context so it never imports back into game.js
+OBJ.initObjectives({
+  THREE, scene,
+  player: () => player,
+  bots: () => bots,
+  keys: () => keys,
+  blueSpawn: () => BLUE_SPAWN,
+  redSpawn: () => RED_SPAWN,
+  mapSize: () => MAP,
+  toast, chatSys,
+  addScore, win: objectiveWin, zoneKill,
+  damagePlayer,
+});
+
+// build the default map so the scene isn't empty behind the menu
+buildMap(currentMap);
+
+// ============================================================
+//  MOVEMENT
+// ============================================================
+function updatePlayer(dt) {
+  if (!player.alive) return;
+
+  // riding a zipline overrides normal movement (R-MAP-4)
+  updateZipline(dt);
+  if (player.zip) {
+    camera.position.set(player.pos.x, player.pos.y + player.height, player.pos.z);
+    camera.rotation.y = player.yaw;
+    camera.rotation.x = player.pitch + recoil;
+    recoil *= 0.86;
+    return;
+  }
+
+  const forward = new THREE.Vector3(-Math.sin(player.yaw), 0, -Math.cos(player.yaw));
+  const right = new THREE.Vector3(Math.cos(player.yaw), 0, -Math.sin(player.yaw));
+  const wish = new THREE.Vector3();
+  if (keys["KeyW"]) wish.add(forward);
+  if (keys["KeyS"]) wish.sub(forward);
+  if (keys["KeyD"]) wish.add(right);
+  if (keys["KeyA"]) wish.sub(right);
+  const moving = wish.lengthSq() > 0;
+  if (moving) wish.normalize();
+
+  // sprint + stamina (R-MOV-2/3), scaled by role (R-ROL-2)
+  const roleSpeed = player.speedMul || 1;
+  let speed = 8.5 * roleSpeed;                      // fast base
+  const drain = player.role === "rusher" ? 21 : 35; // rusher perk: slower drain
+  const wantSprint = keys["ShiftLeft"] && moving && player.stamina > 1 && !player.sliding;
+  if (wantSprint) { speed = 13 * roleSpeed; player.stamina = Math.max(0, player.stamina - drain * dt); }
+  else player.stamina = Math.min(100, player.stamina + 45 * dt); // recharge fast
+  if (player.ads) speed *= 0.55;
+
+  // medic perk: regenerates health out of combat
+  if (player.role === "medic" && player.hp < player.maxHp) {
+    player.hp = Math.min(player.maxHp, player.hp + 4 * dt);
+  }
+
+  // slide (WASD + C) — a quick burst then decays (R-MOV-1)
+  if (keys["KeyC"] && moving && player.onGround && !player.sliding && player.stamina > 20) {
+    player.sliding = true; player.slideT = 0.5; player.stamina -= 15;
+  }
+  if (player.sliding) {
+    player.slideT -= dt;
+    speed = 18 * Math.max(0, player.slideT / 0.5) + 6;
+    if (player.slideT <= 0 || !keys["KeyC"]) player.sliding = false;
+  }
+
+  player.vel.x = wish.x * speed;
+  player.vel.z = wish.z * speed;
+
+  // gravity / jump
+  player.vel.y -= 26 * dt;
+  const next = player.pos.clone();
+  next.x += player.vel.x * dt;
+  next.z += player.vel.z * dt;
+  next.y += player.vel.y * dt;
+
+  // ground / box-top landing
+  let groundY = 0;
+  for (const c of colliders) {
+    if (next.x > c.min.x - player.radius && next.x < c.max.x + player.radius &&
+        next.z > c.min.z - player.radius && next.z < c.max.z + player.radius) {
+      if (player.pos.y >= c.top - 0.1 && c.top > groundY) groundY = c.top;
+    }
+  }
+  if (next.y <= groundY) { next.y = groundY; player.vel.y = 0; player.onGround = true; }
+  else player.onGround = false;
+
+  collide(next);
+  player.pos.copy(next);
+
+  // camera follow (crouch a bit while sliding)
+  const eye = player.height + (player.sliding ? -0.8 : 0);
+  camera.position.set(player.pos.x, player.pos.y + eye, player.pos.z);
+
+  // recoil recovers
+  recoil *= 0.86;
+  camera.rotation.y = player.yaw;
+  camera.rotation.x = player.pitch + recoil;
+
+  // viewmodel bob + ADS position
+  const t = time * 10;
+  const bob = moving && player.onGround ? Math.sin(t) * 0.02 : 0;
+  const tgt = player.ads ? new THREE.Vector3(0, -0.18, -0.5) : new THREE.Vector3(0.32, -0.32 + bob, -0.7);
+  viewGun.position.lerp(tgt, 0.25);
+}
+
+// ============================================================
+//  MAIN LOOP
+// ============================================================
+let time = 0, last = performance.now(), mmTick = 0;
+function frame(dt) {
+  time += dt;
+
+  resize(); // self-heal canvas size (cheap no-op when unchanged)
+
+  if (running) {
+    if (player.downed) {
+      updateDowned(dt);
+    } else {
+      updatePlayer(dt);
+      tryFire(dt);
+      updatePlayerReviving(dt);
+    }
+
+    if (player.reloading > 0) { player.reloading -= dt; if (player.reloading <= 0) finishReload(); }
+    if (player.utilCd > 0) player.utilCd = Math.max(0, player.utilCd - dt);
+
+    updateProjectiles(dt);
+    updateEffects(dt);
+    updateDebris(dt);
+    refreshShieldMeshes();   // keeps the raycast cache correct
+
+    for (const b of bots) { tuneRespawn(b); updateBot(b, dt); }
+    OBJ.updateObjectives(dt);
+
+    // respawn player (only in modes that allow it — R-RSP-3)
+    if (!player.alive && !player.downed && !state.spectating) {
+      const left = Math.ceil(player.respawnAt - time);
+      respawnCount.textContent = Math.max(0, left);
+      if (time >= player.respawnAt) respawnPlayer();
+    }
+
+    checkWin();
+    updateHUD();
+    // the minimap redraws a whole canvas; 20fps is plenty for it
+    if ((mmTick = (mmTick + 1) % 3) === 0) drawMinimap();
+  }
+
+  updateWeather(dt);   // keeps falling even on the menu, so the scene looks alive
+
+  // fx timers
+  if (flashT > 0) { flashT -= dt; if (flashT <= 0) muzzle.intensity = 0; }
+  if (blindT > 0) {
+    blindT -= dt;
+    flashOverlay.style.opacity = Math.max(0, Math.min(1, blindT / blindMax));
+    if (blindT <= 0) flashOverlay.style.opacity = 0;
+  }
+  if (dmgDirT > 0) { dmgDirT -= dt; if (dmgDirT <= 0) dmgDirEl.classList.remove("show"); }
+  if (toastT > 0) { toastT -= dt; if (toastT <= 0) toastEl.classList.remove("show"); }
+
+  renderer.render(scene, camera);
+}
+
+function loop(now) {
+  const dt = Math.min(0.05, (now - last) / 1000);
+  last = now;
+  frame(dt);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+// Debug hook: lets automated tests step the real simulation when the tab is
+// hidden (browsers pause requestAnimationFrame for hidden tabs). No effect on play.
+window.__FL = {
+  frame,
+  startMatch,
+  applyLoadout,
+  applyRole,
+  selectSlot,
+  throwUtility,
+  statsFor,
+  sendChat,
+  hasLOS,
+  findCover,
+  buildMap,
+  castVote,
+  openMapVote,
+  applyEnvironment,
+  effectiveDifficulty,
+  applySkin,
+  showResult,
+  get viewGunColor() { return "#" + viewGun.material.color.getHexString(); },
+  damageProp,
+  breakProp,
+  attachZipline,
+  OBJ,
+  get currentMap() { return currentMap; },
+  get colliders() { return colliders; },
+  get vehicles() { return vehicles; },
+  get ziplines() { return ziplines; },
+  get debris() { return debris; },
+  get env() { return { time: currentTime, weather: currentWeather,
+                       particles: weatherPoints ? weatherPoints.geometry.attributes.position.count : 0,
+                       sunIntensity: +sun.intensity.toFixed(2),
+                       fogFar: scene.fog ? Math.round(scene.fog.far) : null }; },
+  get coverPoints() { return coverPoints; },
+  get teamOrder() { return teamOrder; },
+  get difficulty() { return difficulty; },
+  set difficulty(v) { difficulty = v; },
+  get state() { return state; },
+  get player() { return player; },
+  get bots() { return bots; },
+  get profile() { return profile; },
+  get projectiles() { return projectiles; },
+  get effects() { return effects; },
+  P,
+  set fire(v) { mouseDown = v; },
+  set yaw(v) { player.yaw = v; },
+};

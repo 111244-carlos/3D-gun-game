@@ -1,0 +1,292 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
+    <title>FRONTLINE</title>
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <canvas id="scene"></canvas>
+
+    <!-- ===================== MAIN MENU ===================== -->
+    <div id="menu" class="screen">
+      <div class="menu-card">
+        <h1 class="logo">FRONTLINE</h1>
+        <p class="tagline">Realistic team combat</p>
+
+        <div class="profile-bar">
+          <div class="pb-left">
+            <span class="coin-ico"></span><b id="menuCoins">0</b>
+          </div>
+          <div class="pb-mid">
+            <div class="pb-lvl"><b id="menuLevel">Lv 1</b><small id="menuXpText">0 / 100 XP</small></div>
+            <div class="xp-bar"><div id="menuXpFill" class="xp-fill"></div></div>
+          </div>
+          <div class="pb-right" title="Win streak">🔥 <b id="menuStreak">0</b></div>
+        </div>
+
+        <div class="rank-bar">
+          <div class="rank-badge" id="menuRankBadge"><span id="menuRankTier">B</span></div>
+          <div class="rank-mid">
+            <div class="rank-line"><b id="menuRankName">Bronze V</b><small id="menuRrText">0 / 100 RR</small></div>
+            <div class="rr-bar"><div id="menuRrFill" class="rr-fill"></div></div>
+          </div>
+          <span id="menuProtect" class="protect-tag hidden" title="New players face easier enemies">SHIELDED</span>
+        </div>
+
+        <button id="armoryBtn" class="armory-btn">⚙ ARMORY — Loadout &amp; Shop</button>
+
+        <div class="menu-section">
+          <span class="label">Mode</span>
+          <div class="mode-grid">
+            <button class="mode-btn active" data-mode="team">Team Battle</button>
+            <button class="mode-btn" data-mode="tdm">Team Deathmatch</button>
+            <button class="mode-btn" data-mode="ffa">Free For All</button>
+            <button class="mode-btn" data-mode="sdm">Solo Deathmatch</button>
+            <button class="mode-btn" data-mode="ctf">Capture the Flag</button>
+            <button class="mode-btn" data-mode="dom">Domination</button>
+            <button class="mode-btn" data-mode="snd">Search &amp; Destroy</button>
+            <button class="mode-btn" data-mode="gun">Gun Game</button>
+            <button class="mode-btn" data-mode="br">Battle Royale</button>
+            <button class="mode-btn" data-mode="wave">Wave Survival</button>
+          </div>
+          <p id="modeDesc" class="role-desc"></p>
+        </div>
+
+        <div class="menu-section">
+          <span class="label">Your role</span>
+          <div class="role-grid">
+            <button class="role-btn active" data-role="rusher"><b>Rusher</b><small>+22% speed</small></button>
+            <button class="role-btn" data-role="sniper"><b>Sniper</b><small>Steady aim</small></button>
+            <button class="role-btn" data-role="heavy"><b>Heavy</b><small>+80 HP, tanky</small></button>
+            <button class="role-btn" data-role="medic"><b>Medic</b><small>Regen + revive</small></button>
+          </div>
+          <p id="roleDesc" class="role-desc"></p>
+        </div>
+
+        <div class="menu-section">
+          <span class="label">Enemy difficulty</span>
+          <div class="size-row">
+            <button class="diff-btn active" data-diff="recruit">Recruit</button>
+            <button class="diff-btn" data-diff="veteran">Veteran</button>
+            <button class="diff-btn" data-diff="elite">Elite</button>
+          </div>
+          <p id="diffDesc" class="role-desc"></p>
+        </div>
+
+        <div class="menu-section">
+          <span class="label">Time of day</span>
+          <div class="size-row">
+            <button class="time-btn active" data-time="random">Random</button>
+            <button class="time-btn" data-time="dawn">Dawn</button>
+            <button class="time-btn" data-time="day">Day</button>
+            <button class="time-btn" data-time="dusk">Dusk</button>
+            <button class="time-btn" data-time="night">Night</button>
+          </div>
+        </div>
+
+        <div class="menu-section">
+          <span class="label">Weather</span>
+          <div class="size-row">
+            <button class="wx-btn active" data-wx="random">Random</button>
+            <button class="wx-btn" data-wx="clear">Clear</button>
+            <button class="wx-btn" data-wx="rain">Rain</button>
+            <button class="wx-btn" data-wx="fog">Fog</button>
+            <button class="wx-btn" data-wx="snow">Snow</button>
+          </div>
+        </div>
+
+        <div class="menu-section">
+          <span class="label">Team size (per side)</span>
+          <div class="size-row">
+            <button class="size-btn" data-size="1">1</button>
+            <button class="size-btn" data-size="2">2</button>
+            <button class="size-btn active" data-size="3">3</button>
+            <button class="size-btn" data-size="4">4</button>
+            <button class="size-btn" data-size="5">5</button>
+          </div>
+        </div>
+
+        <div class="menu-section">
+          <span class="label">Controls</span>
+          <div class="size-row">
+            <button class="ctl-btn active" data-ctl="pc">PC (KB+Mouse)</button>
+            <button class="ctl-btn" data-ctl="mobile">Mobile (Touch)</button>
+          </div>
+        </div>
+
+        <button id="playBtn" class="play-btn">DEPLOY</button>
+        <p class="hint">WASD move · Shift sprint · Space jump · C slide · Left-click fire · Right-click aim · R reload<br>1-4 switch slots (4 = throwable) · Buy gear in the Armory</p>
+      </div>
+    </div>
+
+    <!-- ===================== MATCH RESULT / RANK-UP ===================== -->
+    <div id="resultScreen" class="screen hidden">
+      <div class="result-card">
+        <h2 id="resultTitle">VICTORY</h2>
+        <div class="result-rr">
+          <span id="resultRrDelta">+25 RR</span>
+          <div class="rr-bar big"><div id="resultRrFill" class="rr-fill"></div></div>
+          <small id="resultRankLine">Bronze V — 25 / 100 RR</small>
+        </div>
+        <div id="resultRankUp" class="rankup hidden">
+          <div class="rankup-badge" id="resultRankBadge"></div>
+          <b>RANK UP!</b>
+          <span id="resultRankName">Bronze IV</span>
+        </div>
+        <div id="resultSkins" class="result-skins"></div>
+        <div id="resultExtras" class="result-extras"></div>
+        <button id="resultClose" class="play-btn">CONTINUE</button>
+      </div>
+    </div>
+
+    <!-- ===================== MAP VOTE (R-MAP-2) ===================== -->
+    <div id="voteScreen" class="screen hidden">
+      <div class="vote-card">
+        <h2>VOTE FOR THE MAP</h2>
+        <p class="note">Your squad votes too — most votes wins.</p>
+        <div id="voteOptions" class="vote-options"></div>
+        <div id="voteResult" class="vote-result"></div>
+      </div>
+    </div>
+
+    <!-- ===================== ARMORY (shop + loadout) ===================== -->
+    <div id="armory" class="screen hidden">
+      <div class="armory-card">
+        <div class="armory-head">
+          <h2>ARMORY</h2>
+          <div class="armory-meta">
+            <span class="coin-ico"></span><b id="armoryCoinsMirror"></b>
+            <button id="cloudToggle" class="cloud-btn">☁ Cloud sync: OFF</button>
+            <button id="armoryClose" class="close-btn">✕</button>
+          </div>
+        </div>
+        <div class="tabs">
+          <button class="tab-btn active" data-tab="loadout">Loadout</button>
+          <button class="tab-btn" data-tab="guns">Weapons</button>
+          <button class="tab-btn" data-tab="utils">Utility</button>
+          <button class="tab-btn" data-tab="upgrade">Upgrade</button>
+          <button class="tab-btn" data-tab="armor">Armor</button>
+          <button class="tab-btn" data-tab="skins">Skins</button>
+          <button class="tab-btn" data-tab="career">Career</button>
+        </div>
+        <div id="armoryBody" class="armory-body"></div>
+      </div>
+    </div>
+
+    <!-- ===================== HUD ===================== -->
+    <div id="hud" class="screen hidden">
+      <!-- crosshair -->
+      <div id="crosshair" class="crosshair"><i></i><i></i><i></i><i></i></div>
+
+      <!-- hitmarker -->
+      <div id="hitmarker" class="hitmarker"><i></i><i></i><i></i><i></i></div>
+
+      <!-- directional damage indicator -->
+      <div id="dmgDir" class="dmg-dir"></div>
+
+      <!-- top-center match info -->
+      <div class="match-info">
+        <span id="blueScore" class="team-score blue">0</span>
+        <span id="matchLabel" class="match-label">TDM</span>
+        <span id="redScore" class="team-score red">0</span>
+      </div>
+
+      <!-- objective banner (flags / bomb / zone / points) -->
+      <div id="objBanner" class="obj-banner"></div>
+
+      <!-- minimap -->
+      <canvas id="minimap" width="150" height="150"></canvas>
+
+      <!-- bottom-left: health + armor + stamina -->
+      <div class="vitals">
+        <div id="armorRow" class="bar-row hidden">
+          <span class="bar-ico ar"></span>
+          <div class="bar"><div id="arFill" class="bar-fill ar"></div></div>
+          <b id="arText">0</b>
+        </div>
+        <div class="bar-row">
+          <span class="bar-ico hp"></span>
+          <div class="bar"><div id="hpFill" class="bar-fill hp"></div></div>
+          <b id="hpText">150</b>
+        </div>
+        <div class="bar-row">
+          <span class="bar-ico st"></span>
+          <div class="bar small"><div id="stFill" class="bar-fill st"></div></div>
+        </div>
+      </div>
+
+      <!-- bottom-right: ammo + weapon + slots -->
+      <div class="ammo-box">
+        <div class="ammo-line"><span id="ammoNow">30</span><small>/</small><span id="ammoReserve">90</span></div>
+        <div id="weaponName" class="weapon-name">Rifle</div>
+        <div id="slotBar" class="slot-bar"></div>
+      </div>
+
+      <!-- coin popups mount here -->
+      <div id="popups" class="popups"></div>
+
+      <!-- toast / status -->
+      <div id="toast" class="toast"></div>
+
+      <!-- chat log + input (Enter to talk) -->
+      <div id="chatLog" class="chat-log"></div>
+      <div id="chatBox" class="chat-box hidden">
+        <span class="chat-prefix">TEAM</span>
+        <input id="chatInput" type="text" maxlength="90" autocomplete="off"
+               placeholder="attack / defend / regroup / revive me…" />
+      </div>
+
+      <!-- downed overlay -->
+      <div id="downed" class="downed hidden">
+        <div class="downed-inner">
+          <span>YOU ARE DOWN</span>
+          <b id="bleedCount">20</b>
+          <small id="downedHint">Hold on — a teammate may revive you</small>
+          <div class="revive-bar"><div id="reviveFill"></div></div>
+        </div>
+      </div>
+
+      <!-- zipline prompt (forest maps) -->
+      <div id="ziplinePrompt" class="revive-prompt hidden">
+        <b>E</b> <span>Ride the zipline</span>
+      </div>
+
+      <!-- revive prompt (standing over a downed ally) -->
+      <div id="revivePrompt" class="revive-prompt hidden">
+        <b>E</b> <span id="revivePromptText">Revive teammate</span>
+        <div class="revive-bar small"><div id="reviveFillMe"></div></div>
+      </div>
+
+      <!-- respawn overlay -->
+      <div id="respawn" class="respawn hidden">
+        <div class="respawn-inner">
+          <span>ELIMINATED</span>
+          <b id="respawnCount">5</b>
+          <small>respawning…</small>
+        </div>
+      </div>
+
+      <!-- elimination overlay (no-respawn modes) -->
+      <div id="eliminated" class="respawn hidden">
+        <div class="respawn-inner">
+          <span>ELIMINATED</span>
+          <b style="font-size:30px">NO RESPAWN</b>
+          <small id="specText">Watching your squad…</small>
+        </div>
+      </div>
+
+      <!-- coins (top-left) -->
+      <div class="coins-box"><span class="coin-ico"></span><b id="coins">0</b></div>
+
+      <!-- flashbang / screen effect overlay -->
+      <div id="flashOverlay" class="flash-overlay"></div>
+
+      <!-- click-to-play catcher -->
+      <div id="lockPrompt" class="lock-prompt">Click to aim</div>
+    </div>
+
+    <script type="module" src="./src/game.js"></script>
+  </body>
+</html>
