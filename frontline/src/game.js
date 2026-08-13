@@ -458,18 +458,19 @@ const CAMO_MAT = {
 };
 
 // how each gun type looks strapped to a soldier — purely cosmetic, so enemies
-// carrying different weapons are visibly distinguishable at a glance.
+// carrying different weapons are visibly distinguishable at a glance. `family`
+// picks which part-builder in buildGunModel() assembles it; flags tweak greebles.
 const GUN_VISUALS = {
-  rifle:    { len: 1.10, thick: 0.16, color: 0x1c1f24 },
-  smg:      { len: 0.72, thick: 0.15, color: 0x24272c },
-  shotgun:  { len: 0.80, thick: 0.23, color: 0x3a2e22 },
-  burst:    { len: 1.05, thick: 0.16, color: 0x22262b },
-  sniper:   { len: 1.60, thick: 0.13, color: 0x14161a },
-  lmg:      { len: 1.35, thick: 0.24, color: 0x1a1d1f },
-  carbine:  { len: 0.95, thick: 0.16, color: 0x2a2f26 },
-  dmr:      { len: 1.35, thick: 0.15, color: 0x3f4033 },
-  autoshot: { len: 0.85, thick: 0.24, color: 0x44351f },
-  bullpup:  { len: 0.85, thick: 0.18, color: 0x1f2320 },
+  rifle:    { len: 1.10, thick: 0.16, color: 0x1c1f24, accent: 0x2a2d33, family: "rifle" },
+  smg:      { len: 0.72, thick: 0.15, color: 0x24272c, accent: 0x33363c, family: "smg" },
+  shotgun:  { len: 0.80, thick: 0.23, color: 0x3a2e22, accent: 0x6b4a2c, family: "shotgun" },
+  burst:    { len: 1.05, thick: 0.16, color: 0x22262b, accent: 0x2f333a, family: "rifle", carryHandle: true },
+  sniper:   { len: 1.60, thick: 0.13, color: 0x14161a, accent: 0x2a2d33, family: "sniper", scope: "big", bipod: true },
+  lmg:      { len: 1.35, thick: 0.24, color: 0x1a1d1f, accent: 0x2c2f33, family: "lmg", bipod: true },
+  carbine:  { len: 0.95, thick: 0.16, color: 0x2a2f26, accent: 0x3a4033, family: "rifle", stockStyle: "collapsible" },
+  dmr:      { len: 1.35, thick: 0.15, color: 0x3f4033, accent: 0x565645, family: "sniper", scope: "med" },
+  autoshot: { len: 0.85, thick: 0.24, color: 0x44351f, accent: 0x2a2118, family: "shotgun", boxmag: true },
+  bullpup:  { len: 0.85, thick: 0.18, color: 0x1f2320, accent: 0x2c332c, family: "bullpup", scope: "small" },
 };
 // shared, cheap materials reused across every soldier (perf: no per-bot allocs)
 const SKIN_MAT = new THREE.MeshStandardMaterial({ color: 0xcfa07a, roughness: 0.9 });
@@ -479,6 +480,144 @@ const GLOVE_MAT = new THREE.MeshStandardMaterial({ color: 0x2a2a26, roughness: 0
 const GUN_MAT_CACHE = {};
 function gunMat(gv) {
   return GUN_MAT_CACHE[gv.color] || (GUN_MAT_CACHE[gv.color] = new THREE.MeshStandardMaterial({ color: gv.color, roughness: 0.6 }));
+}
+const GUN_ACCENT_CACHE = {};
+function accentMat(gv) {
+  return GUN_ACCENT_CACHE[gv.accent] || (GUN_ACCENT_CACHE[gv.accent] = new THREE.MeshStandardMaterial({ color: gv.accent, roughness: 0.55 }));
+}
+const METAL_DARK_MAT = new THREE.MeshStandardMaterial({ color: 0x111214, roughness: 0.4, metalness: 0.7 });
+const LASER_DOT_MAT = new THREE.MeshStandardMaterial({ color: 0xff2b2b, emissive: 0xff2b2b, emissiveIntensity: 1.2 });
+const LENS_MAT = new THREE.MeshStandardMaterial({ color: 0x2a4a6a, emissive: 0x2a4a6a, emissiveIntensity: 0.6, roughness: 0.3 });
+
+/**
+ * Assembles a detailed, category-distinct gun from primitives — full-size for
+ * the visual overhaul (R-VIS gun pass). `facing` is +1 for third-person guns
+ * (local forward = +z, matching bot mesh.rotation.y convention) or -1 for the
+ * first-person viewmodel (camera forward = -z). `atts` is the player's
+ * equipped attachment keys for this gun (bots never pass this — no visible
+ * attachments on enemies/teammates). Returns a Group with userData.muzzleLocal
+ * / ejectLocal (Vector3, local space) for spawning muzzle FX, and userData.flash
+ * (a hidden Sprite at the muzzle for the fire flash), and userData.skinnable
+ * (materials the player's equipped skin should recolor).
+ */
+function buildGunModel(gunKey, opts) {
+  const facing = (opts && opts.facing) || 1;
+  const atts = (opts && opts.atts) || null;
+  const gv = GUN_VISUALS[gunKey] || GUN_VISUALS.rifle;
+  const fam = gv.family || "rifle";
+  const L = gv.len, T = gv.thick;
+  // third-person (bots, facing=1) share one cached material per color for perf —
+  // many soldiers on screen. The first-person viewmodel (facing=-1) is a single
+  // instance, so it gets its OWN material clone: otherwise tinting it for an
+  // equipped skin would leak that color onto every bot carrying the same gun.
+  const bMat = facing > 0 ? gunMat(gv) : gunMat(gv).clone();
+  const aMat = accentMat(gv);
+  const skinnable = [bMat];
+  const grp = new THREE.Group();
+  const fz = (v) => v * facing; // mirror z-offsets for first-person (facing=-1)
+
+  const add = (geo, mat, x, y, z, rx) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, fz(z));
+    if (rx) m.rotation.x = rx;
+    grp.add(m);
+    return m;
+  };
+
+  // ---- core receiver/body, shared by every family ----
+  add(new THREE.BoxGeometry(T, T * 0.9, L * 0.68), bMat, 0, 0, 0);
+  // pistol grip, hanging below the rear of the receiver
+  add(new THREE.BoxGeometry(T * 0.55, T * 1.4, T * 0.5), aMat, 0, -T * 0.95, -L * 0.16, -0.15 * facing);
+
+  let muzzleZ = L * 0.5, magY = -T * 1.5, magZ = 0.02, magH = 0.55, stockLen = L * 0.24;
+
+  if (fam === "smg") {
+    add(new THREE.CylinderGeometry(T * 0.24, T * 0.24, L * 0.22, 6), METAL_DARK_MAT, 0, T * 0.05, L * 0.42, Math.PI / 2);
+    // flat folding stock
+    add(new THREE.BoxGeometry(T * 0.14, T * 0.7, stockLen), aMat, 0, T * 0.1, -L * 0.4);
+    magH = 0.42; magZ = 0.12;
+  } else if (fam === "shotgun") {
+    add(new THREE.CylinderGeometry(T * 0.36, T * 0.36, L * 0.85, 8), bMat, 0, T * 0.1, L * 0.05, Math.PI / 2);
+    // pump foregrip
+    add(new THREE.BoxGeometry(T * 0.5, T * 0.5, L * 0.16), aMat, 0, -T * 0.55, L * 0.22);
+    // tapered wood-tone stock
+    add(new THREE.BoxGeometry(T * 0.5, T * 0.85, stockLen * 1.3), aMat, 0, -T * 0.05, -L * 0.42);
+    if (gv.boxmag) { magH = 0.5; magZ = 0.14; } else { magH = 0; }
+  } else if (fam === "sniper") {
+    add(new THREE.CylinderGeometry(T * 0.16, T * 0.19, L * 0.62, 6), METAL_DARK_MAT, 0, 0, L * 0.42, Math.PI / 2);
+    const scopeLen = gv.scope === "big" ? L * 0.42 : L * 0.3;
+    const scopeR = gv.scope === "big" ? T * 0.32 : T * 0.24;
+    add(new THREE.CylinderGeometry(scopeR, scopeR, scopeLen, 8), METAL_DARK_MAT, 0, T * 0.85, L * 0.05, Math.PI / 2);
+    add(new THREE.CylinderGeometry(scopeR * 0.85, scopeR * 0.85, 0.02, 8), LENS_MAT, 0, T * 0.85, scopeLen / 2 + L * 0.05, Math.PI / 2);
+    add(new THREE.BoxGeometry(T * 0.4, T * 1.0, stockLen * 1.6), aMat, 0, -T * 0.1, -L * 0.44);
+    magH = 0.3; magZ = -0.02;
+  } else if (fam === "lmg") {
+    add(new THREE.CylinderGeometry(T * 0.34, T * 0.34, L * 0.7, 8), METAL_DARK_MAT, 0, T * 0.1, L * 0.15, Math.PI / 2);
+    add(new THREE.CylinderGeometry(0.22, 0.22, 0.24, 10), aMat, 0, -T * 1.6, L * 0.02); // drum mag
+    add(new THREE.BoxGeometry(T * 0.5, T * 1.0, stockLen * 1.4), aMat, 0, -T * 0.05, -L * 0.44);
+    magH = 0; // drum handled above, no separate hanging mag
+  } else if (fam === "bullpup") {
+    add(new THREE.CylinderGeometry(T * 0.24, T * 0.24, L * 0.3, 6), METAL_DARK_MAT, 0, T * 0.05, L * 0.44, Math.PI / 2);
+    add(new THREE.BoxGeometry(T * 0.3, T * 0.3, T * 0.5), METAL_DARK_MAT, 0, T * 0.7, -L * 0.05); // compact optic
+    // mag sits BEHIND the grip — the bullpup signature silhouette
+    magY = -T * 1.4; magZ = -L * 0.22; magH = 0.5;
+    stockLen = 0; // no separate stock — receiver runs to the rear of the gun
+  } else { // "rifle" family — also covers burst/carbine
+    add(new THREE.CylinderGeometry(T * 0.2, T * 0.2, L * 0.34, 6), METAL_DARK_MAT, 0, 0, L * 0.42, Math.PI / 2);
+    add(new THREE.BoxGeometry(T * 0.1, T * 0.5, T * 0.3), aMat, 0, T * 0.55, L * 0.34); // front sight post
+    const stockShort = gv.stockStyle === "collapsible";
+    add(new THREE.BoxGeometry(T * (stockShort ? 0.3 : 0.42), T * 0.85, stockLen * (stockShort ? 0.7 : 1.0)), aMat, 0, -T * 0.05, -L * 0.42);
+    if (gv.carryHandle) add(new THREE.BoxGeometry(T * 0.18, T * 0.5, L * 0.3), aMat, 0, T * 0.65, L * 0.05);
+    magH = 0.5; magZ = 0.06;
+  }
+
+  if (magH > 0) add(new THREE.BoxGeometry(T * 0.42, magH, T * 0.34), aMat, 0, -T * 0.7 - magH / 2, L * magZ, 0.1 * facing);
+
+  // bipod: two thin angled legs near the front, folded slightly forward-down
+  if (gv.bipod) {
+    for (const side of [-1, 1]) {
+      add(new THREE.CylinderGeometry(0.02, 0.02, 0.42, 4), METAL_DARK_MAT, side * T * 0.5, -T * 1.1, L * 0.4, 0.5);
+    }
+  }
+
+  // ---- attachments (player weapon only — bots never carry these) ----
+  if (atts && atts.length) {
+    const hasBuiltinScope = fam === "sniper";
+    if (atts.includes("scope") && !hasBuiltinScope) {
+      add(new THREE.CylinderGeometry(T * 0.22, T * 0.22, L * 0.32, 8), METAL_DARK_MAT, 0, T * 0.75, L * 0.06, Math.PI / 2);
+      add(new THREE.CylinderGeometry(T * 0.19, T * 0.19, 0.02, 8), LENS_MAT, 0, T * 0.75, L * 0.06 + L * 0.16, Math.PI / 2);
+    }
+    if (atts.includes("grip") && fam !== "shotgun") {
+      add(new THREE.BoxGeometry(T * 0.3, T * 0.6, T * 0.3), METAL_DARK_MAT, 0, -T * 1.0, L * 0.3);
+    }
+    if (atts.includes("laser")) {
+      add(new THREE.BoxGeometry(T * 0.16, T * 0.16, T * 0.5), METAL_DARK_MAT, T * 0.4, -T * 0.2, L * 0.28);
+      add(new THREE.SphereGeometry(0.025, 6, 6), LASER_DOT_MAT, T * 0.4, -T * 0.2, L * 0.28 + T * 0.28);
+    }
+    if (atts.includes("extmag") && magH > 0) {
+      // extension sleeve tacked on below the existing magazine
+      add(new THREE.BoxGeometry(T * 0.34, magH * 0.8, T * 0.26), METAL_DARK_MAT, 0, -T * 0.7 - magH - magH * 0.35, L * magZ, 0.1 * facing);
+    }
+    if (atts.includes("silencer")) {
+      muzzleZ += L * 0.22;
+      add(new THREE.CylinderGeometry(T * 0.17, T * 0.2, L * 0.24, 8), METAL_DARK_MAT, 0, 0, L * 0.5 + L * 0.1, Math.PI / 2);
+    }
+  }
+
+  // ---- muzzle flash sprite (hidden by default; toggled on fire) ----
+  const flash = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: FLASH_TEX, color: 0xffcf7a, transparent: true, depthWrite: false, blending: THREE.AdditiveBlending,
+  }));
+  flash.scale.set(0.55, 0.55, 0.55);
+  flash.visible = false;
+  flash.position.set(0, T * 0.05, fz(muzzleZ));
+  grp.add(flash);
+
+  grp.userData.muzzleLocal = new THREE.Vector3(0, T * 0.05, fz(muzzleZ));
+  grp.userData.ejectLocal = new THREE.Vector3(T * 0.55, T * 0.15, fz(L * 0.05));
+  grp.userData.flash = flash;
+  grp.userData.skinnable = skinnable;
+  return grp;
 }
 
 /**
@@ -529,7 +668,6 @@ function makeSoldier(teamColor, roleColor, gunKey) {
   const leftLeg = makeLeg(-1), rightLeg = makeLeg(1);
 
   // ---- arms — hinged at the shoulder; the right hand carries the gun ----
-  const gv = GUN_VISUALS[gunKey] || GUN_VISUALS.rifle;
   const makeArm = (side) => {
     const pivot = new THREE.Group();
     pivot.position.set(side * 0.56, 1.78, 0);
@@ -542,15 +680,14 @@ function makeSoldier(teamColor, roleColor, gunKey) {
   };
   const leftArm = makeArm(-1), rightArm = makeArm(1);
 
-  const gun = new THREE.Mesh(new THREE.BoxGeometry(gv.thick, gv.thick, gv.len), gunMat(gv));
+  // full detailed gun model, distinct per weapon family — no visible attachments
+  // on bots (atts omitted), materials shared across soldiers for performance
+  const gun = buildGunModel(gunKey, { facing: 1 });
   gun.position.set(-0.12, -0.62, 0.4); rightArm.add(gun);
-  // LMGs get a stubby drum mag underneath so they read as heavier weapons
-  if (gunKey === "lmg") {
-    const drum = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.22, 0.22), gunMat(gv));
-    drum.position.set(-0.12, -0.76, 0.32); rightArm.add(drum);
-  }
 
   g.userData.rig = { leftLeg, rightLeg, leftArm, rightArm };
+  g.userData.gun = gun;
+  g.userData.flash = gun.userData.flash;
   return g;
 }
 
@@ -600,6 +737,8 @@ function animateSoldier(b, dt) {
   // ---- fire kick: a quick pop of extra rotation on the gun arm ----
   if (b.fireKickT > 0) b.fireKickT = Math.max(0, b.fireKickT - dt);
   const kick = b.fireKickT ? (b.fireKickT / 0.12) * 0.18 : 0;
+  // muzzle flash sprite only stays lit for the first sliver of the kick window
+  if (b.gunFlash) b.gunFlash.visible = b.fireKickT > 0.06;
 
   if (b._hasTarget) {
     // aiming: gun arm raises to a ready pose, off-hand steadies near the foregrip
@@ -633,7 +772,7 @@ function spawnBot(team, forceRole) {
     id: ++botIdSeq,
     name: BOT_NAMES[botIdSeq % BOT_NAMES.length],
     team, role: roleKey, roleData: role, mesh,
-    gunKey,
+    gunKey, gunGroup: mesh.userData.gun, gunFlash: mesh.userData.flash,
     hp: role.hp, maxHp: role.hp,
     speed: 6 * role.speed,
     pos: new THREE.Vector3(base.x + (Math.random() * 12 - 6), 0, base.z + (Math.random() * 8 - 4)),
@@ -769,13 +908,129 @@ function applyLoadout() {
   player.burstLeft = 0;
 }
 
-// first-person weapon viewmodel
-const viewGun = new THREE.Mesh(
-  new THREE.BoxGeometry(0.22, 0.22, 1.2),
-  new THREE.MeshStandardMaterial({ color: 0x23262c, roughness: 0.6 })
-);
+// ============================================================
+//  GUN FX — shared soft-glow texture, pooled shell casings + smoke puffs
+//  (pooled so rapid fire from many bots never allocates new meshes mid-match)
+// ============================================================
+function makeGlowTexture() {
+  const cnv = document.createElement("canvas");
+  cnv.width = cnv.height = 32;
+  const ctx = cnv.getContext("2d");
+  const grad = ctx.createRadialGradient(16, 16, 0, 16, 16, 16);
+  grad.addColorStop(0, "rgba(255,255,255,1)");
+  grad.addColorStop(0.4, "rgba(255,255,255,0.7)");
+  grad.addColorStop(1, "rgba(255,255,255,0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, 32, 32);
+  return new THREE.CanvasTexture(cnv);
+}
+const FLASH_TEX = makeGlowTexture();
+
+const CASING_GEOM = new THREE.BoxGeometry(0.035, 0.035, 0.11);
+const CASING_MAT = new THREE.MeshStandardMaterial({ color: 0xc9a24b, roughness: 0.4, metalness: 0.6 });
+const CASING_COUNT = 40;
+const casingPool = [];
+for (let i = 0; i < CASING_COUNT; i++) {
+  const m = new THREE.Mesh(CASING_GEOM, CASING_MAT);
+  m.visible = false;
+  scene.add(m);
+  casingPool.push({ mesh: m, vel: new THREE.Vector3(), spin: new THREE.Vector3(), life: 0, active: false });
+}
+let casingCursor = 0;
+function spawnCasing(pos, rightDir) {
+  const c = casingPool[casingCursor];
+  casingCursor = (casingCursor + 1) % CASING_COUNT;
+  c.mesh.position.copy(pos);
+  c.mesh.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+  c.vel.copy(rightDir).multiplyScalar(1.2 + Math.random() * 1.2);
+  c.vel.y = 2.0 + Math.random() * 1.2;
+  c.spin.set(Math.random() * 10, Math.random() * 10, Math.random() * 10);
+  c.life = 0.9;
+  c.active = true;
+  c.mesh.visible = true;
+}
+
+const SMOKE_COUNT = 20;
+const smokePool = [];
+for (let i = 0; i < SMOKE_COUNT; i++) {
+  const s = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: FLASH_TEX, color: 0xaaaaaa, transparent: true, depthWrite: false, opacity: 0,
+  }));
+  s.visible = false;
+  scene.add(s);
+  smokePool.push({ sprite: s, life: 0, active: false });
+}
+let smokeCursor = 0;
+function spawnSmoke(pos) {
+  const s = smokePool[smokeCursor];
+  smokeCursor = (smokeCursor + 1) % SMOKE_COUNT;
+  s.sprite.position.copy(pos);
+  s.sprite.scale.setScalar(0.18);
+  s.sprite.material.opacity = 0.4;
+  s.life = 0.5;
+  s.active = true;
+  s.sprite.visible = true;
+}
+
+/** World-space muzzle position of an assembled gun Group (from buildGunModel). */
+function gunWorldMuzzle(gunGrp, out) {
+  gunGrp.updateWorldMatrix(true, false);
+  return out.copy(gunGrp.userData.muzzleLocal).applyMatrix4(gunGrp.matrixWorld);
+}
+/** Fires the full muzzle FX bundle (flash + casing + smoke) for one shot. */
+const _fxRight = new THREE.Vector3(), _fxPos = new THREE.Vector3(), _fxQuat = new THREE.Quaternion();
+function fireMuzzleFX(gunGrp) {
+  if (!gunGrp) return;
+  gunGrp.getWorldQuaternion(_fxQuat);
+  gunWorldMuzzle(gunGrp, _fxPos);
+  gunGrp.userData.flash.visible = true;
+  gunGrp.userData.flash.material.rotation = Math.random() * Math.PI;
+  _fxRight.set(1, 0, 0).applyQuaternion(_fxQuat);
+  spawnCasing(_fxPos, _fxRight);
+  spawnSmoke(_fxPos);
+}
+function updateGunFX(dt) {
+  for (const c of casingPool) {
+    if (!c.active) continue;
+    c.life -= dt;
+    c.vel.y -= 9.8 * dt;
+    c.mesh.position.addScaledVector(c.vel, dt);
+    c.mesh.rotation.x += c.spin.x * dt;
+    c.mesh.rotation.y += c.spin.y * dt;
+    if (c.life <= 0 || c.mesh.position.y < -2) { c.active = false; c.mesh.visible = false; }
+  }
+  for (const s of smokePool) {
+    if (!s.active) continue;
+    s.life -= dt;
+    const k = Math.max(0, s.life / 0.5);
+    s.sprite.scale.setScalar(0.18 + (1 - k) * 0.5);
+    s.sprite.material.opacity = 0.4 * k;
+    s.sprite.position.y += dt * 0.4;
+    if (s.life <= 0) { s.active = false; s.sprite.visible = false; }
+  }
+}
+
+// first-person weapon viewmodel — rebuilt whenever the equipped weapon or its
+// attachments change (see the signature check in updatePlayer()). Starts as a
+// placeholder rifle; the very first frame's signature check swaps it in for
+// real before anything is rendered to the player.
+let viewGun = buildGunModel("rifle", { facing: -1, atts: [] });
 viewGun.position.set(0.32, -0.32, -0.7);
 camera.add(viewGun);
+let viewGunSig = "";
+function rebuildViewGun(key, atts) {
+  camera.remove(viewGun);
+  // dispose the outgoing build's own geometries + its unique (non-cached) materials
+  const ownMats = new Set(viewGun.userData.skinnable || []);
+  viewGun.traverse((o) => {
+    if (o.geometry) o.geometry.dispose();
+    if (o.material && (ownMats.has(o.material) || o === viewGun.userData.flash)) o.material.dispose();
+  });
+  viewGun = buildGunModel(key, { facing: -1, atts });
+  viewGun.position.set(0.32, -0.32, -0.7);
+  camera.add(viewGun);
+  applySkin();
+}
 const muzzle = new THREE.PointLight(0xffd27f, 0, 8);
 muzzle.position.set(0.32, -0.28, -1.3);
 camera.add(muzzle);
@@ -1012,6 +1267,7 @@ function tryFire(dt) {
   if (player.ads) spread *= (player.role === "sniper" ? 0.19 : 0.35);
 
   muzzleFlash();
+  fireMuzzleFX(viewGun);
   recoil += s.kick * (player.ads ? 0.5 : 1) * 0.01;
 
   const pellets = g.pellets || 1;
@@ -1982,6 +2238,7 @@ function botShoot(b, target, dist, D) {
   const role = b.roleData;
   const gun = GUNS[b.gunKey] || GUNS[role.gun] || GUNS.rifle;
   b.fireKickT = 0.12;   // visual recoil pop on the gun arm, hit or miss (R-VIS)
+  fireMuzzleFX(b.gunGroup);   // flash + shell casing + smoke, every shot attempt
 
   // accuracy: role skill × difficulty, falling off with range
   const acc = Math.min(0.95, role.accuracy * D.accuracy * 0.6 - Math.min(0.3, dist / 260));
@@ -2269,12 +2526,15 @@ function effectiveDifficulty(picked) {
 /** Paint the viewmodel with the equipped skin. Cosmetic only (R-PRG-4). */
 function applySkin() {
   const c = P.skinColor();
-  viewGun.material.color.setHex(c);
   const s = SKINS[profile.skin];
   // higher rarities get a subtle glow so they read as special
   const rank = s ? RARITY[s.rarity].order : 0;
-  viewGun.material.emissive.setHex(rank >= 3 ? c : 0x000000);
-  viewGun.material.emissiveIntensity = rank >= 4 ? 0.5 : rank >= 3 ? 0.25 : 0;
+  const skinnable = (viewGun.userData && viewGun.userData.skinnable) || [];
+  for (const mat of skinnable) {
+    mat.color.setHex(c);
+    mat.emissive.setHex(rank >= 3 ? c : 0x000000);
+    mat.emissiveIntensity = rank >= 4 ? 0.5 : rank >= 3 ? 0.25 : 0;
+  }
 }
 
 /** Gun Game: force the current ladder weapon into the primary slot. */
@@ -2838,6 +3098,13 @@ function updatePlayer(dt) {
   const bob = moving && player.onGround ? Math.sin(t) * 0.02 : 0;
   const tgt = player.ads ? new THREE.Vector3(0, -0.18, -0.5) : new THREE.Vector3(0.32, -0.32 + bob, -0.7);
   viewGun.position.lerp(tgt, 0.25);
+
+  // rebuild the viewmodel whenever the equipped weapon or its attachments
+  // change — cheap string check every frame, real work only on an actual change
+  const wk = curKey();
+  const attsNow = (profile.attachments && profile.attachments[wk]) || [];
+  const sig = wk + ":" + attsNow.join(",");
+  if (sig !== viewGunSig) { rebuildViewGun(wk, attsNow); viewGunSig = sig; }
 }
 
 // ============================================================
@@ -2863,6 +3130,7 @@ function frame(dt) {
 
     updateProjectiles(dt);
     updateEffects(dt);
+    updateGunFX(dt);
     updateDebris(dt);
     refreshShieldMeshes();   // keeps the raycast cache correct
 
@@ -2885,7 +3153,7 @@ function frame(dt) {
   updateWeather(dt);   // keeps falling even on the menu, so the scene looks alive
 
   // fx timers
-  if (flashT > 0) { flashT -= dt; if (flashT <= 0) muzzle.intensity = 0; }
+  if (flashT > 0) { flashT -= dt; if (flashT <= 0) { muzzle.intensity = 0; if (viewGun.userData.flash) viewGun.userData.flash.visible = false; } }
   if (blindT > 0) {
     blindT -= dt;
     flashOverlay.style.opacity = Math.max(0, Math.min(1, blindT / blindMax));
@@ -2925,7 +3193,7 @@ window.__FL = {
   effectiveDifficulty,
   applySkin,
   showResult,
-  get viewGunColor() { return "#" + viewGun.material.color.getHexString(); },
+  get viewGunColor() { const m = viewGun.userData.skinnable && viewGun.userData.skinnable[0]; return m ? "#" + m.color.getHexString() : null; },
   damageProp,
   breakProp,
   attachZipline,
