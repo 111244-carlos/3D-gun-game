@@ -266,24 +266,28 @@ export const PROP_HP = { crates: 120, trees: 160, buildings: 400, rocks: 260, ve
 export const ROLES = {
   rusher: {
     key: "rusher", name: "Rusher", color: 0xff9040, gun: "smg",
+    guns: ["smg", "shotgun", "burst", "smg", "autoshot", "bullpup"],   // close-range spread, weighted toward SMG
     hp: 130, speed: 1.22, engage: 30, accuracy: 0.85, dr: 0,
     desc: "Fast and aggressive. Closes distance, sprints longer.",
     perk: "+22% speed, stamina drains 40% slower",
   },
   sniper: {
     key: "sniper", name: "Sniper", color: 0x9d6bff, gun: "sniper",
+    guns: ["sniper", "sniper", "sniper", "burst", "dmr"],   // mostly true sniper, occasional DMR
     hp: 130, speed: 0.88, engage: 75, accuracy: 1.35, dr: 0,
     desc: "Deadly at long range, slow on foot.",
     perk: "Much steadier aim, -45% ADS spread",
   },
   heavy: {
     key: "heavy", name: "Shielded Heavy", color: 0x59d0d0, gun: "lmg",
+    guns: ["lmg", "lmg", "shotgun", "smg", "autoshot"],   // mostly LMG, sometimes close-range brawlers
     hp: 230, speed: 0.74, engage: 22, accuracy: 0.8, dr: 0.25,
     desc: "Armour plate soaks punishment. Slow but very hard to kill.",
     perk: "+80 HP, takes 25% less damage",
   },
   medic: {
     key: "medic", name: "Medic", color: 0x6ee87a, gun: "rifle",
+    guns: ["rifle", "burst", "smg", "carbine", "dmr"],   // versatile mid-range support
     hp: 150, speed: 1.0, engage: 40, accuracy: 0.9, dr: 0,
     desc: "Regenerates health and revives downed allies fast.",
     perk: "Heals over time, revives 2x faster",
@@ -339,14 +343,21 @@ export const GUNS = {
   burst:    { name: "Burst Rifle", slot: 0, dmg: 21, rpm: 760,  mag: 30, reserve: 120, spread: 0.8, reload: 2.1, auto: false, kick: 1.0, cost: 350, burst: 3 },
   sniper:   { name: "Sniper",      slot: 0, dmg: 125,rpm: 48,   mag: 5,  reserve: 25,  spread: 0.05,reload: 3.0, auto: false, kick: 2.6, cost: 420, zoom: 4 },
   lmg:      { name: "LMG",         slot: 0, dmg: 19, rpm: 820,  mag: 80, reserve: 240, spread: 1.9, reload: 4.0, auto: true,  kick: 1.2, cost: 720 },
+  carbine:  { name: "Carbine",     slot: 0, dmg: 23, rpm: 700,  mag: 28, reserve: 112, spread: 0.85,reload: 1.9, auto: true,  kick: 0.85,cost: 380 },
+  dmr:      { name: "DMR",         slot: 0, dmg: 42, rpm: 300,  mag: 20, reserve: 100, spread: 0.4, reload: 2.3, auto: false, kick: 1.4, cost: 520, zoom: 2.5 },
+  autoshot: { name: "Auto Shotgun",slot: 0, dmg: 11, rpm: 220,  mag: 10, reserve: 40,  spread: 3.2, reload: 3.0, auto: true,  kick: 1.6, cost: 480, pellets: 7 },
+  bullpup:  { name: "Bullpup Rifle", slot: 0, dmg: 20, rpm: 780, mag: 32, reserve: 128, spread: 0.75,reload: 1.8, auto: true, kick: 0.8, cost: 400 },
 
   // --- purchasable secondaries ---
   revolver: { name: "Revolver",    slot: 1, dmg: 58, rpm: 150,  mag: 6,  reserve: 30,  spread: 0.9, reload: 2.2, auto: false, kick: 1.6, cost: 240 },
   machinep: { name: "Machine Pistol", slot: 1, dmg: 12, rpm: 1000, mag: 24, reserve: 96, spread: 2.2, reload: 1.5, auto: true, kick: 0.7, cost: 300 },
+  tacpistol:{ name: "Tactical Pistol", slot: 1, dmg: 16, rpm: 480, mag: 15, reserve: 75, spread: 1.0, reload: 1.3, auto: false, kick: 0.6, cost: 180 },
+  sawedoff: { name: "Sawed-Off",   slot: 1, dmg: 14, rpm: 100,  mag: 2,  reserve: 12,  spread: 4.5, reload: 2.0, auto: false, kick: 2.2, cost: 260, pellets: 8 },
 
   // --- purchasable melee ---
   knife:    { name: "Combat Knife", slot: 2, dmg: 70, rpm: 300, mag: 1, reserve: 0, spread: 0, reload: 0, auto: false, kick: 0.2, cost: 150, melee: true, range: 2.8 },
   katana:   { name: "Katana",       slot: 2, dmg: 110, rpm: 160, mag: 1, reserve: 0, spread: 0, reload: 0, auto: false, kick: 0.3, cost: 480, melee: true, range: 3.2 },
+  axe:      { name: "Combat Axe",   slot: 2, dmg: 95, rpm: 150, mag: 1, reserve: 0, spread: 0, reload: 0, auto: false, kick: 0.25, cost: 320, melee: true, range: 3.0 },
 };
 
 // ---------- UTILITIES (slot 4) ----------

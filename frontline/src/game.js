@@ -420,7 +420,21 @@ function statsFor(key) { return gunStats(key, profile); }
 //  BOTS  — allies & enemies
 // ============================================================
 
-function makeSoldier(teamColor, roleColor) {
+// how each gun type looks strapped to a soldier — purely cosmetic, so enemies
+// carrying different weapons are visibly distinguishable at a glance.
+const GUN_VISUALS = {
+  rifle:    { len: 1.10, thick: 0.16, color: 0x1c1f24 },
+  smg:      { len: 0.72, thick: 0.15, color: 0x24272c },
+  shotgun:  { len: 0.80, thick: 0.23, color: 0x3a2e22 },
+  burst:    { len: 1.05, thick: 0.16, color: 0x22262b },
+  sniper:   { len: 1.60, thick: 0.13, color: 0x14161a },
+  lmg:      { len: 1.35, thick: 0.24, color: 0x1a1d1f },
+  carbine:  { len: 0.95, thick: 0.16, color: 0x2a2f26 },
+  dmr:      { len: 1.35, thick: 0.15, color: 0x3f4033 },
+  autoshot: { len: 0.85, thick: 0.24, color: 0x44351f },
+  bullpup:  { len: 0.85, thick: 0.18, color: 0x1f2320 },
+};
+function makeSoldier(teamColor, roleColor, gunKey) {
   const g = new THREE.Group();
   const bodyMat = new THREE.MeshStandardMaterial({ color: teamColor, roughness: 0.7 });
   const skin = new THREE.MeshStandardMaterial({ color: 0xcfa07a, roughness: 0.9 });
@@ -432,8 +446,14 @@ function makeSoldier(teamColor, roleColor) {
   helmet.position.y = 2.78; g.add(helmet);
   const legs = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.4, 0.5), new THREE.MeshStandardMaterial({ color: 0x2c3128 }));
   legs.position.y = 0.7; legs.castShadow = true; g.add(legs);
-  const gun = new THREE.Mesh(new THREE.BoxGeometry(0.18, 0.18, 1.1), new THREE.MeshStandardMaterial({ color: 0x1c1f24 }));
+  const gv = GUN_VISUALS[gunKey] || GUN_VISUALS.rifle;
+  const gun = new THREE.Mesh(new THREE.BoxGeometry(gv.thick, gv.thick, gv.len), new THREE.MeshStandardMaterial({ color: gv.color }));
   gun.position.set(0.4, 1.6, 0.5); g.add(gun);
+  // LMGs get a stubby drum mag underneath so they read as heavier weapons
+  if (gunKey === "lmg") {
+    const drum = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.22, 0.22), new THREE.MeshStandardMaterial({ color: gv.color }));
+    drum.position.set(0.4, 1.46, 0.3); g.add(drum);
+  }
   // role stripe on the helmet so you can read roles at a glance (R-ROL-2)
   if (roleColor !== undefined) {
     const band = new THREE.Mesh(
@@ -450,17 +470,24 @@ let botIdSeq = 0;
 const BOT_NAMES = ["Reyes", "Vasquez", "Chen", "Novak", "Okafor", "Idris", "Lindqvist",
                    "Barros", "Kaminski", "Tanaka", "Moreau", "Silva"];
 
+/** Pick this bot's individual weapon from its role's pool (R-AI, gun variety). */
+function pickBotGun(role) {
+  const pool = role.guns && role.guns.length ? role.guns : [role.gun];
+  return pool[(Math.random() * pool.length) | 0];
+}
 function spawnBot(team, forceRole) {
   const isEnemy = team === "red";
   const roleKey = forceRole || ROLE_KEYS[(Math.random() * ROLE_KEYS.length) | 0];
   const role = ROLES[roleKey];
-  const mesh = makeSoldier(isEnemy ? 0xc94040 : 0x3f78c9, role.color);
+  const gunKey = pickBotGun(role);
+  const mesh = makeSoldier(isEnemy ? 0xc94040 : 0x3f78c9, role.color, gunKey);
   scene.add(mesh);
   const base = isEnemy ? RED_SPAWN : BLUE_SPAWN;
   const bot = {
     id: ++botIdSeq,
     name: BOT_NAMES[botIdSeq % BOT_NAMES.length],
     team, role: roleKey, roleData: role, mesh,
+    gunKey,
     hp: role.hp, maxHp: role.hp,
     speed: 6 * role.speed,
     pos: new THREE.Vector3(base.x + (Math.random() * 12 - 6), 0, base.z + (Math.random() * 8 - 4)),
@@ -474,6 +501,7 @@ function spawnBot(team, forceRole) {
     nadeCd: 6 + Math.random() * 8,
     downed: false, bleed: 0, reviveProgress: 0,
     healCd: 0,
+    chatCd: 6 + Math.random() * 14,     // ambient banter timer (R-AI-4)
   };
   mesh.position.copy(bot.pos);
   bots.push(bot);
@@ -829,6 +857,7 @@ function downOrKillBot(b) {
     b.reviveProgress = 0;
     b.mesh.scale.set(1, 0.45, 1);      // slumped
     chatSys(`${b.name} is down!`);
+    setTimeout(() => chatAlly(b.name, pick(DOWN_LINES)), 300);
     return;
   }
   b.alive = false; b.mesh.visible = false; b.respawnAt = time + 5;
@@ -854,6 +883,7 @@ function reviveBot(b, byName) {
   b.mesh.visible = true;
   b.ai = "advance"; b.seenAt = 0;
   chatSys(`${byName} revived ${b.name}`);
+  setTimeout(() => chatAlly(b.name, pick(REVIVED_LINES)), 400);
 }
 
 /**
@@ -1437,6 +1467,18 @@ function updateBot(b, dt) {
     return;
   }
 
+  // ----- ambient squad chatter — allies talk on their own, not just on command -----
+  if (b.team === "blue") {
+    b.chatCd -= dt;
+    if (b.chatCd <= 0) {
+      b.chatCd = 10 + Math.random() * 16;
+      if (time - lastAmbientChat > 4.5 && Math.random() < 0.6) {
+        lastAmbientChat = time;
+        chatAlly(b.name, pick(IDLE_CHATTER));
+      }
+    }
+  }
+
   const D = DIFFICULTY[difficulty] || DIFFICULTY.recruit;
   const role = b.roleData;
 
@@ -1721,7 +1763,7 @@ function orderDestination(b) {
 
 function botShoot(b, target, dist, D) {
   const role = b.roleData;
-  const gun = GUNS[role.gun] || GUNS.rifle;
+  const gun = GUNS[b.gunKey] || GUNS[role.gun] || GUNS.rifle;
 
   // accuracy: role skill × difficulty, falling off with range
   const acc = Math.min(0.95, role.accuracy * D.accuracy * 0.6 - Math.min(0.3, dist / 260));
@@ -1808,6 +1850,46 @@ function closeChat() {
   if (running && player.alive) canvas.requestPointerLock();
 }
 
+// ---------- squad voice lines (R-AI-4) ----------
+// Big varied pools so the squad doesn't repeat itself — one random line per
+// order, plus unprompted ambient banter (see startAmbientChatter below).
+const ORDER_LINES = {
+  attack:  ["Pushing up — on me!", "Moving in, let's go!", "Attacking now!", "Copy, advancing!", "On your six, pushing!", "Let's go, let's go!"],
+  defend:  ["Holding this position.", "Dug in here.", "Copy, holding.", "I've got this angle.", "Staying put.", "Not moving, copy."],
+  regroup: ["Regrouping on you.", "Coming to you.", "On my way, forming up.", "Copy, regrouping.", "Heading your way."],
+  fallback:["Falling back!", "Retreating!", "Copy, pulling back.", "Backing off now.", "Withdrawing, copy."],
+  reviveDown:  ["Coming to get you — hold on!", "Hang on, I'm on my way!", "Don't die on me, almost there!", "Copy, moving to revive!"],
+  reviveWatch: ["Copy, watching for downs.", "Got eyes on the squad.", "Copy, on revive duty.", "Understood, watching your back."],
+};
+const CHATTER = [
+  "Copy that.", "Roger.", "Understood.", "On it.", "Got your back.",
+  "lol", "ok", "no", "yep.", "nah.", "haha", "for real?", "no cap",
+  "nice one.", "nice shot!", "gg", "my bad.", "solid.", "yeah.",
+  "hold up.", "negative.", "watch your corners.", "let's push.",
+  "focus fire!", "on your left.", "incoming!", "reloading, cover me!",
+];
+// unprompted squad banter — fires on its own during a match (see startAmbientChatter)
+const IDLE_CHATTER = [
+  "Stay sharp out there.", "Anyone got eyes on the flag?", "This map is rough.",
+  "No sign of them over here.", "Let's push together.", "ok, I'm moving up.",
+  "Watch that corner.", "Nice shot!", "Contact, get down!", "I'm low on ammo.",
+  "Squad's looking good.", "No time to waste.", "Let's go, let's go!",
+  "Hah, close one.", "Sticking with you.", "lol they never learn.",
+  "ok ok, on it.", "no, go left!", "Reloading, cover me.", "Nice, gg.",
+  "Careful, they're flanking.", "On your six.", "Feels quiet... too quiet.",
+  "Let's wrap this up.", "Yeah, I see them.", "Negative, hold position.",
+];
+const DOWN_LINES = [
+  "I'm down, need a medic!", "Help, I'm hit!", "Man down, revive me!",
+  "I need a revive here!", "Somebody get me up!", "Down! A little help?",
+];
+const REVIVED_LINES = [
+  "Thanks for the save!", "I owe you one.", "Back in it!",
+  "Appreciate it!", "ok, I'm up!", "Good looking out.",
+];
+// note: `pick(arr)` is already defined later in this file (used for map RNG) — reused here.
+let lastAmbientChat = -999;
+
 /** Read an order out of free text and tell the squad. */
 function sendChat(text) {
   const msg = text.trim();
@@ -1821,28 +1903,27 @@ function sendChat(text) {
 
   if (/\b(attack|push|advance|go|charge)\b/.test(t)) {
     teamOrder = "attack"; orderPoint = null;
-    reply("Pushing up — on me!");
+    reply(pick(ORDER_LINES.attack));
     toast("Squad: ATTACKING");
   } else if (/\b(defend|hold|guard|stay)\b/.test(t)) {
     teamOrder = "defend"; orderPoint = player.pos.clone();
-    reply("Holding this position.");
+    reply(pick(ORDER_LINES.defend));
     toast("Squad: DEFENDING here");
   } else if (/\b(regroup|group|follow|come|on me|with me)\b/.test(t)) {
     teamOrder = "regroup"; orderPoint = null;
-    reply("Regrouping on you.");
+    reply(pick(ORDER_LINES.regroup));
     toast("Squad: REGROUPING on you");
   } else if (/\b(revive|help|medic|res|save)\b/.test(t)) {
     teamOrder = "revive"; orderPoint = null;
-    reply(player.downed ? "Coming to get you — hold on!" : "Copy, watching for downs.");
+    reply(pick(player.downed ? ORDER_LINES.reviveDown : ORDER_LINES.reviveWatch));
     toast("Squad: REVIVE priority");
   } else if (/\b(fall ?back|retreat|back off|withdraw)\b/.test(t)) {
     teamOrder = "fallback"; orderPoint = null;
-    reply("Falling back!");
+    reply(pick(ORDER_LINES.fallback));
     toast("Squad: FALLING BACK");
   } else {
     // not an order — just squad chatter
-    const chatter = ["Copy that.", "Roger.", "Understood.", "On it.", "Got your back."];
-    reply(chatter[(Math.random() * chatter.length) | 0]);
+    reply(pick(CHATTER));
   }
 }
 

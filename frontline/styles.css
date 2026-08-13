@@ -30,6 +30,8 @@ html, body {
 }
 .menu-card {
   width: min(520px, 92vw);
+  max-height: 94vh;
+  overflow-y: auto;
   background: var(--panel);
   border: 1px solid rgba(120, 170, 255, 0.18);
   border-radius: 18px;
@@ -37,6 +39,8 @@ html, body {
   backdrop-filter: blur(8px);
   box-shadow: 0 30px 80px rgba(0, 0, 0, 0.55);
 }
+.menu-card::-webkit-scrollbar { width: 8px; }
+.menu-card::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
 .logo {
   font-size: 46px; letter-spacing: 8px; font-weight: 800;
   text-align: center;
@@ -46,7 +50,7 @@ html, body {
 .tagline { text-align: center; color: #8fa3b8; letter-spacing: 3px; margin-bottom: 22px; font-size: 13px; text-transform: uppercase; }
 .menu-section { margin-bottom: 18px; }
 .label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 1.5px; color: #7d92a8; margin-bottom: 8px; }
-.mode-grid { display: grid; gap: 8px; }
+.mode-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
 .size-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .mode-btn, .size-btn, .ctl-btn {
   background: rgba(255, 255, 255, 0.05);
@@ -238,6 +242,25 @@ html, body {
 }
 .play-btn:hover { transform: translateY(-2px); box-shadow: 0 12px 28px rgba(74, 157, 255, 0.4); }
 .hint { text-align: center; margin-top: 16px; font-size: 12px; color: #6f8397; line-height: 1.6; }
+
+/* ---------- wide/short screens (laptops that can't fit a tall menu) ---------- */
+@media (max-height: 760px) and (min-width: 860px) {
+  .menu-card {
+    width: min(900px, 94vw);
+    column-count: 2;
+    column-gap: 28px;
+    padding: 24px 30px 28px;
+  }
+  .logo, .tagline, .profile-bar, .rank-bar, .armory-btn, .play-btn, .hint {
+    column-span: all;
+  }
+  .menu-section {
+    break-inside: avoid;
+    -webkit-column-break-inside: avoid;
+  }
+  .logo { font-size: 38px; margin-bottom: 2px; }
+  .tagline { margin-bottom: 14px; }
+}
 
 /* ===================== HUD ===================== */
 #hud { pointer-events: none; }
