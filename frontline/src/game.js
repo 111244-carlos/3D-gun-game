@@ -620,6 +620,132 @@ function buildGunModel(gunKey, opts) {
   return grp;
 }
 
+const STEEL_MAT = new THREE.MeshStandardMaterial({ color: 0xc7cdd6, roughness: 0.25, metalness: 0.85 });
+const WOOD_MAT = new THREE.MeshStandardMaterial({ color: 0x5c4022, roughness: 0.8 });
+const WRAP_MAT = new THREE.MeshStandardMaterial({ color: 0x201d1a, roughness: 0.9 });
+
+/**
+ * Melee weapons (slot 3) get their own hand-held shapes — a bare fist, a short
+ * combat knife, a long katana, or a hafted axe — instead of falling back to a
+ * gun silhouette. Only used for the first-person viewmodel (bots never wield
+ * melee weapons visibly). Returns the same userData contract as buildGunModel
+ * minus muzzle FX (melee has no flash/casings/smoke).
+ */
+function buildMeleeModel(meleeKey, facing) {
+  const grp = new THREE.Group();
+  const fz = (v) => v * facing;
+  const add = (geo, mat, x, y, z, rx, rz) => {
+    const m = new THREE.Mesh(geo, mat);
+    m.position.set(x, y, fz(z));
+    if (rx) m.rotation.x = rx;
+    if (rz) m.rotation.z = rz;
+    grp.add(m);
+    return m;
+  };
+
+  if (meleeKey === "knife") {
+    add(new THREE.BoxGeometry(0.06, 0.08, 0.18), WRAP_MAT, 0, -0.04, -0.06);
+    add(new THREE.BoxGeometry(0.03, 0.05, 0.03), STEEL_MAT, 0, 0.01, 0.04); // guard
+    add(new THREE.BoxGeometry(0.028, 0.035, 0.3), STEEL_MAT, 0, -0.015, 0.24);
+  } else if (meleeKey === "katana") {
+    add(new THREE.BoxGeometry(0.055, 0.06, 0.26), WRAP_MAT, 0, -0.05, -0.12);
+    add(new THREE.CylinderGeometry(0.075, 0.075, 0.02, 10), new THREE.MeshStandardMaterial({ color: 0x8a6a2a, roughness: 0.5 }), 0, -0.05, 0.02, Math.PI / 2);
+    add(new THREE.BoxGeometry(0.022, 0.05, 0.62), STEEL_MAT, 0, -0.03, 0.36);
+  } else if (meleeKey === "axe") {
+    add(new THREE.CylinderGeometry(0.022, 0.028, 0.4, 6), WOOD_MAT, 0, -0.06, 0.02, Math.PI / 2);
+    add(new THREE.BoxGeometry(0.05, 0.2, 0.18), METAL_DARK_MAT, 0.07, -0.02, 0.2);
+    add(new THREE.BoxGeometry(0.05, 0.06, 0.05), METAL_DARK_MAT, -0.02, -0.02, 0.2); // back spike
+  } else { // "fist" (and any unrecognized key) — bare gloved hands
+    add(new THREE.BoxGeometry(0.19, 0.17, 0.19), GLOVE_MAT, 0.03, -0.05, 0.14);
+    add(new THREE.BoxGeometry(0.14, 0.13, 0.14), GLOVE_MAT, -0.14, -0.14, -0.02);
+  }
+
+  // melee items are naturally small/compact — scale the viewmodel up so it reads
+  // clearly on screen instead of looking tiny next to how large the guns render
+  grp.scale.setScalar(1.7);
+  grp.userData.skinnable = [];
+  return grp;
+}
+
+/**
+ * Utility/throwable items (slot 4) get a shape driven by the item's `kind`
+ * (grenade, canister, bottle, kit, pad, panel) and tinted with its own catalog
+ * color — data-driven so a newly added UTILS entry still renders sensibly via
+ * the default case. First-person viewmodel only, no muzzle FX.
+ */
+function buildUtilityModel(utilKey, facing) {
+  const u = UTILS[utilKey] || UTILS.frag;
+  const mat = new THREE.MeshStandardMaterial({ color: u.color, roughness: 0.5 });
+  const grp = new THREE.Group();
+  const fz = (v) => v * facing;
+  const add = (geo, m, x, y, z, rx) => {
+    const mesh = new THREE.Mesh(geo, m);
+    mesh.position.set(x, y, fz(z));
+    if (rx) mesh.rotation.x = rx;
+    grp.add(mesh);
+    return mesh;
+  };
+
+  switch (u.kind) {
+    case "frag":
+      add(new THREE.SphereGeometry(0.12, 10, 8), mat, 0, -0.04, 0.05);
+      add(new THREE.BoxGeometry(0.035, 0.11, 0.035), METAL_DARK_MAT, 0.09, 0.05, 0.05); // spoon/lever
+      break;
+    case "flash":
+      add(new THREE.CylinderGeometry(0.08, 0.08, 0.2, 10), mat, 0, -0.04, 0.05, Math.PI / 2);
+      add(new THREE.CylinderGeometry(0.035, 0.035, 0.04, 8), METAL_DARK_MAT, 0, -0.04, 0.16, Math.PI / 2);
+      break;
+    case "smoke":
+    case "freeze":
+      add(new THREE.CylinderGeometry(0.095, 0.095, 0.24, 10), mat, 0, -0.04, 0.05, Math.PI / 2);
+      add(new THREE.CylinderGeometry(0.095, 0.095, 0.03, 10), METAL_DARK_MAT, 0, -0.04, 0.18, Math.PI / 2);
+      break;
+    case "fire": { // molotov: glass bottle + rag
+      const glassMat = new THREE.MeshStandardMaterial({ color: 0x4a6a3a, roughness: 0.2, transparent: true, opacity: 0.82 });
+      add(new THREE.CylinderGeometry(0.085, 0.1, 0.22, 8), glassMat, 0, -0.05, 0.03, Math.PI / 2);
+      add(new THREE.CylinderGeometry(0.035, 0.045, 0.08, 8), glassMat, 0, -0.05, 0.16, Math.PI / 2);
+      add(new THREE.BoxGeometry(0.06, 0.02, 0.15), new THREE.MeshStandardMaterial({ color: 0xd8d0b0 }), 0, 0.01, 0.14);
+      break;
+    }
+    case "heal":
+      add(new THREE.BoxGeometry(0.24, 0.15, 0.19), mat, 0, -0.05, 0.05);
+      add(new THREE.BoxGeometry(0.15, 0.03, 0.03), new THREE.MeshStandardMaterial({ color: 0xffffff }), 0, 0.02, 0.15);
+      add(new THREE.BoxGeometry(0.03, 0.03, 0.14), new THREE.MeshStandardMaterial({ color: 0xffffff }), 0, 0.02, 0.15);
+      break;
+    case "pad":
+      add(new THREE.CylinderGeometry(0.15, 0.15, 0.035, 12), mat, 0, -0.08, 0.08);
+      add(new THREE.CylinderGeometry(0.1, 0.1, 0.045, 12), new THREE.MeshStandardMaterial({ color: u.color, emissive: u.color, emissiveIntensity: 0.4 }), 0, -0.06, 0.08);
+      break;
+    case "shield":
+      // dark frame first so the panel reads clearly against any backdrop (sky, snow, etc.)
+      add(new THREE.BoxGeometry(0.3, 0.36, 0.025), METAL_DARK_MAT, 0, -0.02, 0.015);
+      add(new THREE.BoxGeometry(0.26, 0.32, 0.035), new THREE.MeshStandardMaterial({ color: u.color, transparent: true, opacity: 0.85, roughness: 0.2, emissive: u.color, emissiveIntensity: 0.25 }), 0, -0.02, 0.02);
+      add(new THREE.BoxGeometry(0.05, 0.34, 0.05), METAL_DARK_MAT, -0.14, -0.02, 0.02); // handle rail
+      break;
+    default:
+      add(new THREE.SphereGeometry(0.1, 8, 8), mat, 0, -0.04, 0.05);
+  }
+  // small gloved grip stub so the item doesn't look like it's floating in the hand
+  add(new THREE.BoxGeometry(0.08, 0.12, 0.08), GLOVE_MAT, 0, -0.17, -0.05);
+
+  // same reasoning as melee: these are small hand props, scale up for on-screen readability
+  grp.scale.setScalar(1.7);
+  grp.userData.skinnable = [];
+  return grp;
+}
+
+/**
+ * Picks the right builder for whatever's equipped: a real gun, a melee weapon,
+ * or a utility/throwable — so every slot gets its own look instead of every
+ * non-gun slot silently falling back to a rifle silhouette.
+ */
+function buildEquippedModel(key, opts) {
+  const gunDef = GUNS[key];
+  if (gunDef && gunDef.melee) return buildMeleeModel(key, (opts && opts.facing) || 1);
+  if (UTILS[key]) return buildUtilityModel(key, (opts && opts.facing) || 1);
+  return buildGunModel(key, opts);
+}
+
 /**
  * A jointed low-poly soldier: camo fatigues + a bold team-colored vest/pack for
  * instant team read, hinged shoulders/hips so animateSoldier() can walk/aim it.
@@ -1018,15 +1144,22 @@ let viewGun = buildGunModel("rifle", { facing: -1, atts: [] });
 viewGun.position.set(0.32, -0.32, -0.7);
 camera.add(viewGun);
 let viewGunSig = "";
+/** True if a material is one of the long-lived shared/cached ones every build reuses. */
+function isSharedGunMaterial(m) {
+  return m === METAL_DARK_MAT || m === LASER_DOT_MAT || m === LENS_MAT ||
+    m === GLOVE_MAT || m === SKIN_MAT || m === HELMET_MAT || m === BOOT_MAT ||
+    m === STEEL_MAT || m === WOOD_MAT || m === WRAP_MAT ||
+    Object.values(GUN_MAT_CACHE).includes(m) || Object.values(GUN_ACCENT_CACHE).includes(m);
+}
 function rebuildViewGun(key, atts) {
   camera.remove(viewGun);
-  // dispose the outgoing build's own geometries + its unique (non-cached) materials
-  const ownMats = new Set(viewGun.userData.skinnable || []);
+  // dispose the outgoing build's own geometries + its unique (non-cached) materials —
+  // covers the skin-tinted gun clone, the flash sprite, and one-off melee/utility mats
   viewGun.traverse((o) => {
     if (o.geometry) o.geometry.dispose();
-    if (o.material && (ownMats.has(o.material) || o === viewGun.userData.flash)) o.material.dispose();
+    if (o.material && !isSharedGunMaterial(o.material)) o.material.dispose();
   });
-  viewGun = buildGunModel(key, { facing: -1, atts });
+  viewGun = buildEquippedModel(key, { facing: -1, atts });
   viewGun.position.set(0.32, -0.32, -0.7);
   camera.add(viewGun);
   applySkin();
