@@ -50,6 +50,7 @@
             <button class="mode-btn" data-mode="gun">Gun Game</button>
             <button class="mode-btn" data-mode="br">Battle Royale</button>
             <button class="mode-btn" data-mode="wave">Wave Survival</button>
+            <button class="mode-btn" data-mode="range">Shooting Range</button>
           </div>
           <p id="modeDesc" class="role-desc"></p>
         </div>
@@ -185,6 +186,9 @@
 
       <!-- directional damage indicator -->
       <div id="dmgDir" class="dmg-dir"></div>
+
+      <!-- Shooting Range only: bail back to the menu (also ESC) -->
+      <button id="exitRangeBtn" class="exit-range-btn hidden">✕ Exit Range</button>
 
       <!-- top-center match info -->
       <div class="match-info">

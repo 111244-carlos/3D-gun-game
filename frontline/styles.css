@@ -329,6 +329,13 @@ html, body {
 .coin-ico { width: 15px; height: 15px; border-radius: 50%; background: radial-gradient(circle at 35% 30%, #fff3b0, var(--coin)); box-shadow: 0 0 6px rgba(255,207,63,0.6); }
 .coins-box b { color: var(--coin); }
 
+.exit-range-btn {
+  position: fixed; top: 58px; left: 14px; pointer-events: auto;
+  background: rgba(255,90,90,0.14); border: 1px solid rgba(255,90,90,0.45); color: #ffb3b3;
+  padding: 7px 12px; border-radius: 9px; font-size: 12px; font-weight: 700; cursor: pointer; transition: 0.15s;
+}
+.exit-range-btn:hover { background: rgba(255,90,90,0.26); border-color: #ff5a5a; color: #fff; }
+
 .popups { position: fixed; left: 52%; top: 44%; pointer-events: none; }
 .popup { position: absolute; font-weight: 800; font-size: 18px; color: var(--coin); text-shadow: 0 2px 6px rgba(0,0,0,0.7); animation: floatUp 0.9s ease-out forwards; white-space: nowrap; }
 @keyframes floatUp { 0% { opacity: 1; transform: translateY(0); } 100% { opacity: 0; transform: translateY(-40px); } }

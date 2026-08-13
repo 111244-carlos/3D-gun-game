@@ -176,6 +176,11 @@ export const MODES = {
     objective: "waves", bombSites: true, coop: true,
     desc: "Co-op vs endless waves that keep getting harder.",
   },
+  range: {
+    key: "range", name: "Shooting Range", teams: false, respawn: true,
+    target: 0, objective: null, bombSites: false, practice: true,
+    desc: "Solo practice. Infinite ammo, no damage — test every gun on static targets.",
+  },
 };
 export const MODE_KEYS = Object.keys(MODES);
 
@@ -230,8 +235,17 @@ export const MAPS = {
     prop: "buildings", destructible: 0.4, vehicles: 5, ziplines: 0,
     desc: "Street fighting between blocks and burnt-out cars.",
   },
+  // Private practice map — flat, empty, built for the Shooting Range mode.
+  // votable:false keeps it out of the normal map-vote rotation (R-MAP-2).
+  range: {
+    key: "range", name: "Range",
+    ground: 0x6b6558, sky: 0xaecbe0, grid: [0x4a4438, 0x5c5548], fog: [140, 500],
+    coverCount: 0, coverScale: 1.0, palette: [0x8a6a3f, 0x6f7b63, 0x7a5233, 0x566072],
+    prop: "crates", destructible: 0, vehicles: 0, ziplines: 0, votable: false,
+    desc: "A private range with static targets at every distance.",
+  },
 };
-export const MAP_KEYS = Object.keys(MAPS);
+export const MAP_KEYS = Object.keys(MAPS).filter(k => MAPS[k].votable !== false);
 
 // ---------- TIME OF DAY (R-MAP-5) ----------
 // skyMul/fogMul tint and thicken the map's own palette rather than replacing it.

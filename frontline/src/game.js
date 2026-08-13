@@ -420,6 +420,43 @@ function statsFor(key) { return gunStats(key, profile); }
 //  BOTS  — allies & enemies
 // ============================================================
 
+/**
+ * Procedural camo texture, drawn once per team on an offscreen canvas —
+ * no image assets needed. Irregular blotches over a base tone so uniforms
+ * read as "fabric" instead of a flat color block.
+ */
+function makeCamoTexture(base, blotches) {
+  const size = 64;
+  const cnv = document.createElement("canvas");
+  cnv.width = cnv.height = size;
+  const ctx = cnv.getContext("2d");
+  ctx.fillStyle = base;
+  ctx.fillRect(0, 0, size, size);
+  for (let i = 0; i < 26; i++) {
+    ctx.fillStyle = blotches[i % blotches.length];
+    const x = Math.random() * size, y = Math.random() * size;
+    const r = 5 + Math.random() * 8;
+    ctx.beginPath();
+    ctx.ellipse(x, y, r, r * (0.6 + Math.random() * 0.5), Math.random() * Math.PI, 0, Math.PI * 2);
+    ctx.fill();
+    // wrap blotches across edges so the tile repeats seamlessly
+    ctx.beginPath(); ctx.ellipse(x - size, y, r, r * 0.8, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x + size, y, r, r * 0.8, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x, y - size, r, r * 0.8, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.ellipse(x, y + size, r, r * 0.8, 0, 0, Math.PI * 2); ctx.fill();
+  }
+  const tex = new THREE.CanvasTexture(cnv);
+  tex.wrapS = tex.wrapT = THREE.RepeatWrapping;
+  tex.repeat.set(2, 2);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  return tex;
+}
+// one shared texture + material per team — cheap, reused across every soldier
+const CAMO_MAT = {
+  blue: new THREE.MeshStandardMaterial({ map: makeCamoTexture("#3a4a42", ["#2d3a34", "#4d5c50", "#26302b"]), roughness: 0.85 }),
+  red:  new THREE.MeshStandardMaterial({ map: makeCamoTexture("#4a3f36", ["#3a2f28", "#5c4c3c", "#332a22"]), roughness: 0.85 }),
+};
+
 // how each gun type looks strapped to a soldier — purely cosmetic, so enemies
 // carrying different weapons are visibly distinguishable at a glance.
 const GUN_VISUALS = {
@@ -434,35 +471,144 @@ const GUN_VISUALS = {
   autoshot: { len: 0.85, thick: 0.24, color: 0x44351f },
   bullpup:  { len: 0.85, thick: 0.18, color: 0x1f2320 },
 };
+// shared, cheap materials reused across every soldier (perf: no per-bot allocs)
+const SKIN_MAT = new THREE.MeshStandardMaterial({ color: 0xcfa07a, roughness: 0.9 });
+const HELMET_MAT = new THREE.MeshStandardMaterial({ color: 0x2f3a2a, roughness: 0.8 });
+const BOOT_MAT = new THREE.MeshStandardMaterial({ color: 0x23241f, roughness: 0.85 });
+const GLOVE_MAT = new THREE.MeshStandardMaterial({ color: 0x2a2a26, roughness: 0.8 });
+const GUN_MAT_CACHE = {};
+function gunMat(gv) {
+  return GUN_MAT_CACHE[gv.color] || (GUN_MAT_CACHE[gv.color] = new THREE.MeshStandardMaterial({ color: gv.color, roughness: 0.6 }));
+}
+
+/**
+ * A jointed low-poly soldier: camo fatigues + a bold team-colored vest/pack for
+ * instant team read, hinged shoulders/hips so animateSoldier() can walk/aim it.
+ * Returns the root Group; rig pivots live on root.userData.rig for animation.
+ */
 function makeSoldier(teamColor, roleColor, gunKey) {
   const g = new THREE.Group();
-  const bodyMat = new THREE.MeshStandardMaterial({ color: teamColor, roughness: 0.7 });
-  const skin = new THREE.MeshStandardMaterial({ color: 0xcfa07a, roughness: 0.9 });
-  const torso = new THREE.Mesh(new THREE.BoxGeometry(1, 1.4, 0.6), bodyMat);
-  torso.position.y = 1.5; torso.castShadow = true; g.add(torso);
-  const head = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.6, 0.6), skin);
-  head.position.y = 2.5; head.castShadow = true; g.add(head);
-  const helmet = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.35, 0.7), new THREE.MeshStandardMaterial({ color: 0x2f3a2a }));
-  helmet.position.y = 2.78; g.add(helmet);
-  const legs = new THREE.Mesh(new THREE.BoxGeometry(0.9, 1.4, 0.5), new THREE.MeshStandardMaterial({ color: 0x2c3128 }));
-  legs.position.y = 0.7; legs.castShadow = true; g.add(legs);
-  const gv = GUN_VISUALS[gunKey] || GUN_VISUALS.rifle;
-  const gun = new THREE.Mesh(new THREE.BoxGeometry(gv.thick, gv.thick, gv.len), new THREE.MeshStandardMaterial({ color: gv.color }));
-  gun.position.set(0.4, 1.6, 0.5); g.add(gun);
-  // LMGs get a stubby drum mag underneath so they read as heavier weapons
-  if (gunKey === "lmg") {
-    const drum = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.22, 0.22), new THREE.MeshStandardMaterial({ color: gv.color }));
-    drum.position.set(0.4, 1.46, 0.3); g.add(drum);
-  }
-  // role stripe on the helmet so you can read roles at a glance (R-ROL-2)
+  const isRed = teamColor === 0xc94040;
+  const camoMat = isRed ? CAMO_MAT.red : CAMO_MAT.blue;
+  const vestMat = new THREE.MeshStandardMaterial({ color: teamColor, roughness: 0.55, emissive: teamColor, emissiveIntensity: 0.12 });
+
+  // ---- torso (fixed — hips group below is what actually gets positioned) ----
+  const torso = new THREE.Mesh(new THREE.BoxGeometry(0.92, 1.0, 0.52), camoMat);
+  torso.position.y = 1.37; torso.castShadow = true; g.add(torso);
+
+  // bold team-colored chest rig — the main "read teams instantly" signal
+  const vest = new THREE.Mesh(new THREE.BoxGeometry(0.7, 0.62, 0.16), vestMat);
+  vest.position.set(0, 1.42, 0.32); vest.castShadow = true; g.add(vest);
+  const pack = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.55, 0.22), vestMat);
+  pack.position.set(0, 1.48, -0.34); pack.castShadow = true; g.add(pack);
+
+  // ---- head assembly ----
+  const head = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.5, 0.5), SKIN_MAT);
+  head.position.y = 2.14; head.castShadow = true; g.add(head);
+  const helmet = new THREE.Mesh(new THREE.BoxGeometry(0.6, 0.3, 0.6), HELMET_MAT);
+  helmet.position.y = 2.37; g.add(helmet);
   if (roleColor !== undefined) {
     const band = new THREE.Mesh(
-      new THREE.BoxGeometry(0.74, 0.12, 0.74),
+      new THREE.BoxGeometry(0.64, 0.11, 0.64),
       new THREE.MeshStandardMaterial({ color: roleColor, emissive: roleColor, emissiveIntensity: 0.55 })
     );
-    band.position.y = 2.95; g.add(band);
+    band.position.y = 2.52; g.add(band);
   }
+
+  // ---- legs — hinged at the hip so they can swing when walking ----
+  const makeLeg = (side) => {
+    const pivot = new THREE.Group();
+    pivot.position.set(side * 0.22, 0.9, 0);
+    const thigh = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.86, 0.32), camoMat);
+    thigh.position.y = -0.43; thigh.castShadow = true; pivot.add(thigh);
+    const boot = new THREE.Mesh(new THREE.BoxGeometry(0.32, 0.22, 0.38), BOOT_MAT);
+    boot.position.y = -0.86; boot.castShadow = true; pivot.add(boot);
+    g.add(pivot);
+    return pivot;
+  };
+  const leftLeg = makeLeg(-1), rightLeg = makeLeg(1);
+
+  // ---- arms — hinged at the shoulder; the right hand carries the gun ----
+  const gv = GUN_VISUALS[gunKey] || GUN_VISUALS.rifle;
+  const makeArm = (side) => {
+    const pivot = new THREE.Group();
+    pivot.position.set(side * 0.56, 1.78, 0);
+    const upper = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.8, 0.22), camoMat);
+    upper.position.y = -0.4; upper.castShadow = true; pivot.add(upper);
+    const glove = new THREE.Mesh(new THREE.BoxGeometry(0.2, 0.16, 0.2), GLOVE_MAT);
+    glove.position.y = -0.78; pivot.add(glove);
+    g.add(pivot);
+    return pivot;
+  };
+  const leftArm = makeArm(-1), rightArm = makeArm(1);
+
+  const gun = new THREE.Mesh(new THREE.BoxGeometry(gv.thick, gv.thick, gv.len), gunMat(gv));
+  gun.position.set(-0.12, -0.62, 0.4); rightArm.add(gun);
+  // LMGs get a stubby drum mag underneath so they read as heavier weapons
+  if (gunKey === "lmg") {
+    const drum = new THREE.Mesh(new THREE.BoxGeometry(0.22, 0.22, 0.22), gunMat(gv));
+    drum.position.set(-0.12, -0.76, 0.32); rightArm.add(drum);
+  }
+
+  g.userData.rig = { leftLeg, rightLeg, leftArm, rightArm };
   return g;
+}
+
+/**
+ * Per-frame limb animation: idle sway damps to a stop, walking swings legs
+ * and counter-swings arms, an active target lifts the gun arm into an aim
+ * pose (with a little kick on every shot), and death/downed states get their
+ * own falling/collapsed poses. Called once per bot per frame from frame().
+ */
+function animateSoldier(b, dt) {
+  const mesh = b.mesh, rig = mesh && mesh.userData && mesh.userData.rig;
+  if (!mesh) return;
+
+  // ---- falling over on a kill: tip forward/sideways, then vanish (R-VIS) ----
+  // eases from whatever pose the mesh is already in (standing, or mid-slump if it
+  // was downed first) toward flat-on-the-ground, so there's no snap either way.
+  if (b.deathAnim !== undefined && b.deathAnim > 0) {
+    b.deathAnim = Math.max(0, b.deathAnim - dt / 0.45);
+    const ease = Math.min(1, dt * 8);
+    mesh.rotation.x += (1.3 - mesh.rotation.x) * ease;
+    mesh.rotation.z += ((b._deathTiltZ || 0) - mesh.rotation.z) * ease;
+    mesh.position.y += (-0.12 - mesh.position.y) * ease;
+    if (b.deathAnim === 0) mesh.visible = false;
+    return;
+  }
+
+  if (b.isDummy || !b.alive || !rig) return;
+
+  // ---- downed: slumped forward instead of the old cartoonish squash ----
+  if (b.downed) {
+    mesh.rotation.x += (1.05 - mesh.rotation.x) * Math.min(1, dt * 6);
+    return;
+  }
+  if (mesh.rotation.x !== 0) mesh.rotation.x += (0 - mesh.rotation.x) * Math.min(1, dt * 6);
+
+  // ---- walk cycle: amplitude eases toward 0 (idle) or 1 (moving) ----
+  const dx = b.pos.x - (b._animPrevX ?? b.pos.x), dz = b.pos.z - (b._animPrevZ ?? b.pos.z);
+  const moving = (dx * dx + dz * dz) > (0.0009 * dt * dt) && dt > 0;
+  b._animPrevX = b.pos.x; b._animPrevZ = b.pos.z;
+  b.walkAmp = (b.walkAmp || 0) + ((moving ? 1 : 0) - (b.walkAmp || 0)) * Math.min(1, dt * 6);
+  b.walkPhase = (b.walkPhase || 0) + dt * 9;
+  const swing = Math.sin(b.walkPhase) * b.walkAmp * 0.55;
+
+  rig.leftLeg.rotation.x = swing;
+  rig.rightLeg.rotation.x = -swing;
+
+  // ---- fire kick: a quick pop of extra rotation on the gun arm ----
+  if (b.fireKickT > 0) b.fireKickT = Math.max(0, b.fireKickT - dt);
+  const kick = b.fireKickT ? (b.fireKickT / 0.12) * 0.18 : 0;
+
+  if (b._hasTarget) {
+    // aiming: gun arm raises to a ready pose, off-hand steadies near the foregrip
+    rig.rightArm.rotation.x += (-1.1 - kick - rig.rightArm.rotation.x) * Math.min(1, dt * 10);
+    rig.leftArm.rotation.x += (-1.0 - rig.leftArm.rotation.x) * Math.min(1, dt * 10);
+  } else {
+    rig.rightArm.rotation.x = -swing * 0.9;
+    rig.leftArm.rotation.x = swing * 0.9;
+  }
 }
 
 const bots = [];
@@ -506,6 +652,54 @@ function spawnBot(team, forceRole) {
   mesh.position.copy(bot.pos);
   bots.push(bot);
   return bot;
+}
+
+// ============================================================
+//  SHOOTING RANGE — static practice targets (R-MOD-5)
+// ============================================================
+/** A simple pop-up silhouette target: post + panel, no weapon, no AI. */
+function makeTargetDummy() {
+  const g = new THREE.Group();
+  const post = new THREE.Mesh(
+    new THREE.BoxGeometry(0.16, 2.9, 0.16),
+    new THREE.MeshStandardMaterial({ color: 0x3a3f36, roughness: 0.9 })
+  );
+  post.position.y = 1.45; g.add(post);
+  const panel = new THREE.Mesh(
+    new THREE.BoxGeometry(1.1, 2.0, 0.08),
+    new THREE.MeshStandardMaterial({ color: 0x22261f, roughness: 0.85 })
+  );
+  panel.position.y = 2.5; panel.castShadow = true; g.add(panel);
+  // a bright ring so hits register visually at a glance
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.32, 0.05, 8, 24),
+    new THREE.MeshStandardMaterial({ color: 0xd8453f, emissive: 0xd8453f, emissiveIntensity: 0.5 })
+  );
+  ring.position.set(0, 2.6, 0.05); g.add(ring);
+  return g;
+}
+
+/** Lay out static targets at increasing distance down-range from BLUE_SPAWN. */
+function buildRangeTargets(count) {
+  const lanesX = [-16, -8, 0, 8, 16];
+  const distances = [14, 26, 38, 52, 66, 80];
+  const n = Math.max(6, count || 6);
+  for (let i = 0; i < n; i++) {
+    const x = lanesX[i % lanesX.length] + (Math.random() * 4 - 2);
+    const dz = distances[i % distances.length];
+    const mesh = makeTargetDummy();
+    scene.add(mesh);
+    const pos = new THREE.Vector3(x, 0, BLUE_SPAWN.z + dz);
+    mesh.position.copy(pos);
+    bots.push({
+      id: ++botIdSeq, name: `Target ${i + 1}`, isDummy: true,
+      team: "red", role: null, roleData: null, mesh,
+      hp: 40, maxHp: 40, pos, vel: new THREE.Vector3(),
+      alive: true, cd: 0, seenAt: 0, respawnAt: 0,
+      ai: "advance", aiTimer: 0, coverPos: null, flankSign: 1, nadeCd: 999,
+      downed: false, bleed: 0, reviveProgress: 0, healCd: 0, chatCd: 999999,
+    });
+  }
 }
 
 // ============================================================
@@ -602,6 +796,7 @@ addEventListener("keydown", (e) => {
   // typing in chat swallows all gameplay keys
   if (chatOpen) return;
   if (e.code === "Enter" || e.code === "NumpadEnter") { e.preventDefault(); openChat(); return; }
+  if (e.code === "Escape" && running && state.mode === "range") { leaveRange(); return; }
 
   keys[e.code] = true;
   if (e.code === "Digit1") selectSlot(0);
@@ -804,6 +999,8 @@ function tryFire(dt) {
 
   player.fireCd = 60 / g.rpm;
   player.ammo[wk]--;
+  // practice modes (Shooting Range) never run dry — reserve tops itself off (R-MOD-5)
+  if ((MODES[state.mode] || {}).practice) player.reserve[wk] = g.reserve;
   if (player.burstLeft > 0) player.burstLeft--;
 
   // spread: base * movement/jump penalty, reduced by ADS  (R-CMB-3)
@@ -823,9 +1020,17 @@ function tryFire(dt) {
 
 /** Kill a bot. `byPlayer` drives coins/XP (R-ECO-1, R-ECO-5). */
 function killBot(b, byPlayer) {
-  if (b.team === "red") {
+  // range targets just pop down and reset — no coins, no kill count, no score
+  if (b.isDummy) {
     b.alive = false;
     b.mesh.visible = false;
+    b.respawnAt = time + 1.6;
+    return;
+  }
+  if (b.team === "red") {
+    b.alive = false;
+    b.deathAnim = 1;                        // falls over instead of vanishing (R-VIS)
+    b._deathTiltZ = (Math.random() * 2 - 1) * 0.3;
     b.respawnAt = time + 5;
     if (byPlayer) {
       player.kills++;
@@ -854,8 +1059,7 @@ function downOrKillBot(b) {
     b.downed = true;
     b.hp = 0;
     b.bleed = REVIVE.bleedOut;
-    b.reviveProgress = 0;
-    b.mesh.scale.set(1, 0.45, 1);      // slumped
+    b.reviveProgress = 0;               // animateSoldier eases the mesh into a slumped pose
     chatSys(`${b.name} is down!`);
     setTimeout(() => chatAlly(b.name, pick(DOWN_LINES)), 300);
     return;
@@ -868,8 +1072,8 @@ function downOrKillBot(b) {
 function finishBotDeath(b) {
   b.downed = false;
   b.alive = false;
-  b.mesh.visible = false;
-  b.mesh.scale.set(1, 1, 1);
+  b.deathAnim = 1;                        // falls the rest of the way instead of vanishing
+  b._deathTiltZ = (Math.random() * 2 - 1) * 0.3;
   b.respawnAt = time + 5;
   if (state.mode !== "wave") state.redScore++;
 }
@@ -879,7 +1083,7 @@ function reviveBot(b, byName) {
   b.alive = true;
   b.hp = REVIVE.hpOnRevive;
   b.reviveProgress = 0;
-  b.mesh.scale.set(1, 1, 1);
+  b.mesh.rotation.x = 0; b.mesh.rotation.z = 0; b.mesh.position.y = 0;
   b.mesh.visible = true;
   b.ai = "advance"; b.seenAt = 0;
   chatSys(`${byName} revived ${b.name}`);
@@ -1341,6 +1545,7 @@ function showDamageFrom(worldPos) {
 }
 
 function damagePlayer(amount, fromPos) {
+  if ((MODES[state.mode] || {}).practice) return;   // no damage in the Shooting Range
   if (!player.alive || player.downed) return;
   // role damage reduction (heavy) then armor soak (R-ECO-4, R-ROL-2)
   amount *= (1 - (player.roleData ? player.roleData.dr : 0));
@@ -1449,6 +1654,14 @@ function blockedAt(x, z) {
 }
 
 function updateBot(b, dt) {
+  // ----- range targets: never move, never shoot, just pop back up (R-MOD-5) -----
+  if (b.isDummy) {
+    if (!b.alive && time >= b.respawnAt) {
+      b.hp = b.maxHp; b.alive = true; b.mesh.visible = true;
+    }
+    return;
+  }
+
   // ----- downed teammates bleed out or wait for a revive (R-AI-3) -----
   if (b.downed) {
     b.bleed -= dt;
@@ -1462,6 +1675,8 @@ function updateBot(b, dt) {
       const base = b.team === "red" ? RED_SPAWN : BLUE_SPAWN;
       b.pos.set(base.x + (Math.random() * 12 - 6), 0, base.z + (Math.random() * 8 - 4));
       b.hp = b.maxHp; b.alive = true; b.mesh.visible = true;
+      b.mesh.rotation.x = 0; b.mesh.rotation.z = 0; b.mesh.position.y = 0;
+      b.deathAnim = undefined; b._hasTarget = false;
       b.seenAt = 0; b.ai = "advance"; b.coverPos = null;
     }
     return;
@@ -1538,6 +1753,7 @@ function updateBot(b, dt) {
 
   // ----- no enemy: follow team orders / hold ground -----
   if (!target) {
+    b._hasTarget = false;
     const dest = orderDestination(b);
     if (dest) { moveToward(b, dest, dt); faceAlong(b, dest); }
     clampBot(b);
@@ -1547,6 +1763,7 @@ function updateBot(b, dt) {
   const dist = best;
   const engage = role.engage;
   const los = hasLOS(b.pos, target.pos);
+  b._hasTarget = los && dist < engage * 1.8;   // drives the gun-raised aim pose (R-VIS)
 
   // ----- rethink tactics periodically -----
   b.aiTimer -= dt;
@@ -1764,6 +1981,7 @@ function orderDestination(b) {
 function botShoot(b, target, dist, D) {
   const role = b.roleData;
   const gun = GUNS[b.gunKey] || GUNS[role.gun] || GUNS.rifle;
+  b.fireKickT = 0.12;   // visual recoil pop on the gun arm, hit or miss (R-VIS)
 
   // accuracy: role skill × difficulty, falling off with range
   const acc = Math.min(0.95, role.accuracy * D.accuracy * 0.6 - Math.min(0.3, dist / 260));
@@ -1965,7 +2183,11 @@ function startMatch(mode, teamSize, roleKey, diffKey, mapKey) {
   for (const b of bots) scene.remove(b.mesh);
   bots.length = 0;
 
-  if (mode === "wave") {
+  if (mode === "range") {
+    // solo practice: static targets only, no allies, nothing shoots back (R-MOD-5)
+    buildRangeTargets(6);
+    modeLabel = m.name.toUpperCase();
+  } else if (mode === "wave") {
     // co-op: a few allies + endless scaling waves (R-MOD-3)
     for (let i = 0; i < Math.max(1, teamSize - 1); i++) spawnBot("blue");
     nextWave();
@@ -1983,7 +2205,7 @@ function startMatch(mode, teamSize, roleKey, diffKey, mapKey) {
   }
 
   // solo-mode bots start spread across the map rather than in one base
-  if (!m.teams && mode !== "wave") {
+  if (!m.teams && mode !== "wave" && mode !== "range") {
     for (const b of bots) {
       b.pos.set((Math.random() * 2 - 1) * (MAP - 20), 0, (Math.random() * 2 - 1) * (MAP - 20));
       b.mesh.position.copy(b.pos);
@@ -2006,12 +2228,27 @@ function startMatch(mode, teamSize, roleKey, diffKey, mapKey) {
 
   document.getElementById("menu").classList.add("hidden");
   document.getElementById("hud").classList.remove("hidden");
+  document.getElementById("exitRangeBtn").classList.toggle("hidden", mode !== "range");
   running = true;
   canvas.requestPointerLock();
   player.zip = null; player.zipT = 0;
   toast(`${m.name} — ${MAPS[currentMap].name}, ${TIMES[currentTime].name}, ${WEATHER[currentWeather].name}`);
   chatSys(m.desc);
   if (!m.respawn) chatSys("No respawns in this mode — stay alive.");
+  if (mode === "range") chatSys("Infinite ammo, no damage. Press ESC or click Exit Range to leave.");
+}
+
+/** Bail out of the Shooting Range back to the menu — there's no win/lose to wait out. */
+function leaveRange() {
+  if (state.mode !== "range") return;
+  running = false;
+  state.spectating = false;
+  document.exitPointerLock();
+  for (const b of bots) scene.remove(b.mesh);
+  bots.length = 0;
+  document.getElementById("hud").classList.add("hidden");
+  document.getElementById("exitRangeBtn").classList.add("hidden");
+  document.getElementById("menu").classList.remove("hidden");
 }
 
 const DIFF_ORDER = ["recruit", "veteran", "elite"];
@@ -2481,7 +2718,17 @@ function castVote(playerPick) {
   }, 1400);
 }
 
-document.getElementById("playBtn").addEventListener("click", openMapVote);
+document.getElementById("playBtn").addEventListener("click", () => {
+  // Shooting Range is solo practice — no squad, no map vote, straight in (R-MOD-5)
+  if (selMode === "range") {
+    currentTime = "day"; currentWeather = "clear";
+    document.getElementById("menu").classList.add("hidden");
+    startMatch("range", selSize, selRole, selDiff, "range");
+    return;
+  }
+  openMapVote();
+});
+document.getElementById("exitRangeBtn").addEventListener("click", leaveRange);
 
 // Armory (shop + loadout)
 initShop(toast);
@@ -2619,7 +2866,7 @@ function frame(dt) {
     updateDebris(dt);
     refreshShieldMeshes();   // keeps the raycast cache correct
 
-    for (const b of bots) { tuneRespawn(b); updateBot(b, dt); }
+    for (const b of bots) { tuneRespawn(b); updateBot(b, dt); animateSoldier(b, dt); }
     OBJ.updateObjectives(dt);
 
     // respawn player (only in modes that allow it — R-RSP-3)
