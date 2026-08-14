@@ -858,7 +858,23 @@ function animateSoldier(b, dt) {
     mesh.rotation.x += (1.05 - mesh.rotation.x) * Math.min(1, dt * 6);
     return;
   }
-  if (mesh.rotation.x !== 0) mesh.rotation.x += (0 - mesh.rotation.x) * Math.min(1, dt * 6);
+
+  // ---- crouch / jump / slide stance (R-AI-5) — decremented here (not in
+  // updateBot) so a bot that loses its target mid-hop still finishes the
+  // animation instead of freezing in a crouch or mid-air forever ----
+  if (b.jumpT > 0) b.jumpT = Math.max(0, b.jumpT - dt);
+  if (b.slideT > 0) b.slideT = Math.max(0, b.slideT - dt);
+  const poseEase = Math.min(1, dt * 8);
+  let targetY = 0, targetTiltX = 0;
+  if (b.jumpT > 0) {
+    targetY = Math.sin((1 - b.jumpT / 0.5) * Math.PI) * 0.5;
+  } else if (b.slideT > 0) {
+    targetY = -0.22; targetTiltX = 0.35;
+  } else if (b.crouching) {
+    targetY = -0.3;
+  }
+  mesh.position.y += (targetY - mesh.position.y) * poseEase;
+  mesh.rotation.x += (targetTiltX - mesh.rotation.x) * poseEase;
 
   // ---- walk cycle: amplitude eases toward 0 (idle) or 1 (moving) ----
   const dx = b.pos.x - (b._animPrevX ?? b.pos.x), dz = b.pos.z - (b._animPrevZ ?? b.pos.z);
@@ -931,10 +947,34 @@ function spawnBot(team, forceRole) {
     downed: false, bleed: 0, reviveProgress: 0,
     healCd: 0,
     chatCd: 6 + Math.random() * 14,     // ambient banter timer (R-AI-4)
+    // mobility flavor (R-AI-5): strafing/sprint/crouch/jump/slide + live weapon swaps
+    strafePhase: Math.random() * Math.PI * 2,
+    wantSprint: false, crouching: false, jumpT: 0, slideT: 0,
+    weaponSwitchCd: 4 + Math.random() * 8,
   };
   mesh.position.copy(bot.pos);
   bots.push(bot);
   return bot;
+}
+
+/**
+ * Swaps a live bot's carried weapon mid-match — rebuilds its arm-mounted gun
+ * model in place (same mount point as makeSoldier used) and repoints
+ * gunGroup/gunFlash so muzzle FX and gunfire sound keep working (R-AI-5).
+ * Only disposes the outgoing gun's geometries — its materials are the shared
+ * per-color cache from gunMat()/accentMat(), reused by every other soldier.
+ */
+function switchBotGun(b, newKey) {
+  const rig = b.mesh.userData.rig;
+  if (!rig || !b.gunGroup || newKey === b.gunKey) return;
+  rig.rightArm.remove(b.gunGroup);
+  b.gunGroup.traverse((o) => { if (o.geometry) o.geometry.dispose(); });
+  const newGun = buildGunModel(newKey, { facing: 1 });
+  newGun.position.set(-0.12, -0.62, 0.4); // matches makeSoldier's mount offset
+  rig.rightArm.add(newGun);
+  b.gunKey = newKey;
+  b.gunGroup = newGun;
+  b.gunFlash = newGun.userData.flash;
 }
 
 // ============================================================
@@ -1497,6 +1537,7 @@ function reviveBot(b, byName) {
   b.mesh.rotation.x = 0; b.mesh.rotation.z = 0; b.mesh.position.y = 0;
   b.mesh.visible = true;
   b.ai = "advance"; b.seenAt = 0;
+  b.crouching = false; b.wantSprint = false; b.jumpT = 0; b.slideT = 0;
   chatSys(`${byName} revived ${b.name}`);
   setTimeout(() => chatAlly(b.name, pick(REVIVED_LINES)), 400);
 }
@@ -2098,6 +2139,7 @@ function updateBot(b, dt) {
       b.mesh.rotation.x = 0; b.mesh.rotation.z = 0; b.mesh.position.y = 0;
       b.deathAnim = undefined; b._hasTarget = false;
       b.seenAt = 0; b.ai = "advance"; b.coverPos = null;
+      b.crouching = false; b.wantSprint = false; b.jumpT = 0; b.slideT = 0;
     }
     return;
   }
@@ -2116,6 +2158,19 @@ function updateBot(b, dt) {
 
   const D = DIFFICULTY[difficulty] || DIFFICULTY.recruit;
   const role = b.roleData;
+
+  // ----- live weapon swaps: bots occasionally switch to another gun from their
+  // role's pool mid-match, not just once at spawn (R-AI-5). Runs even without
+  // a target so idle/patrolling bots stay a little unpredictable too. Recruits
+  // still do this sometimes (mobility is never 0) — just less often than elites.
+  b.weaponSwitchCd -= dt;
+  if (b.weaponSwitchCd <= 0) {
+    b.weaponSwitchCd = 16 - D.mobility * 7 + Math.random() * 10;
+    const pool = role.guns && role.guns.length > 1 ? role.guns.filter((k) => k !== b.gunKey) : null;
+    if (pool && pool.length && Math.random() < 0.25 + D.mobility * 0.35 && (b.cd <= 0.1)) {
+      switchBotGun(b, pool[(Math.random() * pool.length) | 0]);
+    }
+  }
 
   // medics top themselves and nearby friends up over time
   if (b.role === "medic") {
@@ -2188,7 +2243,8 @@ function updateBot(b, dt) {
   // ----- rethink tactics periodically -----
   b.aiTimer -= dt;
   if (b.aiTimer <= 0) {
-    b.aiTimer = 0.8 + Math.random() * 0.8;
+    // more active AI (higher mobility) rethinks faster — feels twitchier, not just more accurate
+    b.aiTimer = (0.8 + Math.random() * 0.8) / (0.7 + D.mobility * 0.5);
     const hurtBadly = b.hp < b.maxHp * 0.45;
 
     if (D.cover && hurtBadly) {
@@ -2198,6 +2254,15 @@ function updateBot(b, dt) {
       b.ai = "flank";
     } else {
       b.ai = "advance";
+    }
+
+    // ----- mobility flavor: sprint bursts, crouched holds, hops, slides (R-AI-5) -----
+    b.wantSprint = dist > engage * 1.25 && Math.random() < 0.25 + D.mobility * 0.4;
+    b.crouching = !b.wantSprint && dist < engage * 1.1 && los && Math.random() < 0.12 + D.mobility * 0.3;
+    if (b.jumpT <= 0 && b.slideT <= 0 && Math.random() < 0.05 + D.mobility * 0.1) {
+      b.jumpT = 0.5; // a quick hop — mostly cosmetic, reads as "alive" movement
+    } else if (b.jumpT <= 0 && b.slideT <= 0 && dist > 5 && Math.random() < 0.04 + D.mobility * 0.12) {
+      b.slideT = 0.4; b.crouching = false; // a burst slide toward/around the target
     }
   }
 
@@ -2228,6 +2293,27 @@ function updateBot(b, dt) {
     const order = orderDestination(b);
     destination = (order && dist > engage) ? order : target.pos;
   }
+
+  // ----- side-to-side weaving while in combat range — reads as active dodging
+  // instead of a robotic beeline, scaled by difficulty mobility (R-AI-5) -----
+  if (destination && dist < engage * 2.4) {
+    b.strafePhase += dt * (1.4 + D.mobility * 1.3);
+    const weave = Math.sin(b.strafePhase) * (1.1 + D.mobility * 1.7);
+    const away = new THREE.Vector3().subVectors(b.pos, target.pos).setY(0);
+    if (away.lengthSq() > 0.04) {
+      away.normalize();
+      const side = new THREE.Vector3(-away.z, 0, away.x).multiplyScalar(weave);
+      destination = destination.clone().add(side);
+    }
+  }
+
+  // sprinting/sliding speed up repositioning; crouching slows/holds it — purely
+  // additive on top of the tactic's own speed. jumpT/slideT are ticked down in
+  // animateSoldier (runs every frame regardless of target) so a bot that loses
+  // its target mid-hop still finishes the animation instead of freezing in it.
+  if (b.slideT > 0) speedMul *= 1.6;
+  else if (b.wantSprint) speedMul *= 1.3;
+  else if (b.crouching) speedMul *= 0.55;
 
   // close to preferred range, then hold
   const wantCloser = dist > engage * 0.75 || !los;

@@ -312,19 +312,22 @@ export const ROLE_KEYS = Object.keys(ROLES);
 // ---------- DIFFICULTY (R-AI-1) ----------
 // Weak AI rushes, waits ~3s, then shoots. Strong AI uses cover, flanks, throws grenades.
 export const DIFFICULTY = {
+  // `mobility` (R-AI-5) scales how often/aggressively bots weave, sprint,
+  // crouch, hop, and swap weapons — never zero, so even Recruits stay a
+  // little active instead of standing and trading shots like statues.
   recruit: {
     key: "recruit", name: "Recruit", reaction: 3.0, accuracy: 0.7,
-    cover: false, flank: false, grenades: false, aggression: 1.0,
+    cover: false, flank: false, grenades: false, aggression: 1.0, mobility: 0.4,
     desc: "Rush you, hesitate 3s, then fire.",
   },
   veteran: {
     key: "veteran", name: "Veteran", reaction: 1.1, accuracy: 1.0,
-    cover: true, flank: false, grenades: true, aggression: 1.1,
+    cover: true, flank: false, grenades: true, aggression: 1.1, mobility: 0.85,
     desc: "Uses cover and throws grenades.",
   },
   elite: {
     key: "elite", name: "Elite", reaction: 0.35, accuracy: 1.3,
-    cover: true, flank: true, grenades: true, aggression: 1.25,
+    cover: true, flank: true, grenades: true, aggression: 1.25, mobility: 1.3,
     desc: "Takes cover, flanks you, grenades your position.",
   },
 };
