@@ -10,6 +10,7 @@ import * as OBJ from "./objectives.js";
 import * as P from "./profile.js";
 import { profile } from "./profile.js";
 import { initShop, renderHeader, isArmoryOpen } from "./shop.js";
+import { Sound } from "./sound.js";
 
 // ============================================================
 //  RENDERER / SCENE / CAMERA
@@ -472,6 +473,16 @@ const GUN_VISUALS = {
   autoshot: { len: 0.85, thick: 0.24, color: 0x44351f, accent: 0x2a2118, family: "shotgun", boxmag: true },
   bullpup:  { len: 0.85, thick: 0.18, color: 0x1f2320, accent: 0x2c332c, family: "bullpup", scope: "small" },
 };
+// which procedural gunshot profile (defined in sound.js) each weapon key uses —
+// separate from GUN_VISUALS.family so secondary-only guns (no 3D model family)
+// still get their own sound (R-AUD).
+const GUN_SFX = {
+  rifle: "crack", burst: "crack", carbine: "crack", bullpup: "crack", lmg: "crack",
+  smg: "snap", machinep: "snap",
+  shotgun: "boom", autoshot: "boom", sawedoff: "boom",
+  sniper: "sharpcrack", dmr: "sharpcrack",
+  pistol: "pop", tacpistol: "pop", revolver: "pop",
+};
 // shared, cheap materials reused across every soldier (perf: no per-bot allocs)
 const SKIN_MAT = new THREE.MeshStandardMaterial({ color: 0xcfa07a, roughness: 0.9 });
 const HELMET_MAT = new THREE.MeshStandardMaterial({ color: 0x2f3a2a, roughness: 0.8 });
@@ -854,11 +865,18 @@ function animateSoldier(b, dt) {
   const moving = (dx * dx + dz * dz) > (0.0009 * dt * dt) && dt > 0;
   b._animPrevX = b.pos.x; b._animPrevZ = b.pos.z;
   b.walkAmp = (b.walkAmp || 0) + ((moving ? 1 : 0) - (b.walkAmp || 0)) * Math.min(1, dt * 6);
-  b.walkPhase = (b.walkPhase || 0) + dt * 9;
+  const prevWalkPhase = b.walkPhase || 0;
+  b.walkPhase = prevWalkPhase + dt * 9;
   const swing = Math.sin(b.walkPhase) * b.walkAmp * 0.55;
 
   rig.leftLeg.rotation.x = swing;
   rig.rightLeg.rotation.x = -swing;
+
+  // footsteps — only once actually walking (amp eased up), one per half-stride (R-AUD)
+  if (b.walkAmp > 0.6 && Math.floor(b.walkPhase / Math.PI) > Math.floor(prevWalkPhase / Math.PI)) {
+    const surface = (MAPS[currentMap] || MAPS.compound).surface || "dirt";
+    Sound.playFootstep(surface, { pos: b.pos, listenerPos: player.pos, listenerYaw: player.yaw });
+  }
 
   // ---- fire kick: a quick pop of extra rotation on the gun arm ----
   if (b.fireKickT > 0) b.fireKickT = Math.max(0, b.fireKickT - dt);
@@ -1218,8 +1236,8 @@ addEventListener("mousemove", (e) => {
   player.pitch = Math.max(-lim, Math.min(lim, player.pitch));
 });
 const lockPrompt = document.getElementById("lockPrompt");
-lockPrompt.addEventListener("click", () => canvas.requestPointerLock());
-canvas.addEventListener("click", () => { if (running) canvas.requestPointerLock(); });
+lockPrompt.addEventListener("click", () => { Sound.unlock(); canvas.requestPointerLock(); });
+canvas.addEventListener("click", () => { Sound.unlock(); if (running) canvas.requestPointerLock(); });
 document.addEventListener("pointerlockchange", () => {
   lockPrompt.classList.toggle("hidden", document.pointerLockElement === canvas);
 });
@@ -1261,6 +1279,7 @@ function startReload() {
   if (player.ammo[wk] >= s.mag) return;
   if (player.reserve[wk] <= 0) { toast("No reserve ammo!"); return; }
   player.reloading = g.reload;
+  Sound.playReloadOut();
 }
 function finishReload() {
   const wk = curKey();
@@ -1268,6 +1287,7 @@ function finishReload() {
   const need = s.mag - player.ammo[wk];
   const take = Math.min(need, player.reserve[wk]);
   player.ammo[wk] += take; player.reserve[wk] -= take;
+  Sound.playReloadIn();
 }
 
 /** One hitscan pellet. Returns the bot hit (or null). */
@@ -1380,7 +1400,7 @@ function tryFire(dt) {
   }
 
   if (player.ammo[wk] <= 0) {
-    if (justPressed) toast("Reload! (R)");
+    if (justPressed) { toast("Reload! (R)"); Sound.playDryFire(); }
     player.burstLeft = 0;
     return;
   }
@@ -1401,6 +1421,8 @@ function tryFire(dt) {
 
   muzzleFlash();
   fireMuzzleFX(viewGun);
+  const silenced = ((profile.attachments && profile.attachments[wk]) || []).includes("silencer");
+  Sound.playGunshot(GUN_SFX[wk] || "crack", { silenced });
   recoil += s.kick * (player.ads ? 0.5 : 1) * 0.01;
 
   const pellets = g.pellets || 1;
@@ -1745,17 +1767,21 @@ function updateProjectiles(dt) {
 
 function detonate(p) {
   const u = p.u, at = p.pos.clone();
+  const sndOpts = { pos: at, listenerPos: player.pos, listenerYaw: player.yaw };
   switch (u.kind) {
     case "frag": {
       explode(at, u.radius, u.dmg, 0xffb060, p.fromTeam);
+      Sound.playExplosion(sndOpts);
       break;
     }
     case "fire": {          // molotov — lingering damage pool
       addEffect({ kind: "fire", at, radius: u.radius, life: u.life, dps: u.dmg, color: u.color, tick: 0 });
+      Sound.playUtility("fire", sndOpts);
       break;
     }
     case "smoke": {
       addEffect({ kind: "smoke", at, radius: u.radius, life: u.life, color: u.color });
+      Sound.playUtility("smoke", sndOpts);
       break;
     }
     case "flash": {         // blinds the player if close + in view
@@ -1765,6 +1791,7 @@ function detonate(p) {
         flashBlind(strength);
       }
       for (const b of bots) if (b.alive && b.pos.distanceTo(at) < u.radius) b.seenAt = time + 2.5; // stunned
+      Sound.playUtility("flash", sndOpts);
       break;
     }
     case "heal": {          // healing kit — heals player + allies in radius
@@ -1774,20 +1801,24 @@ function detonate(p) {
       }
       for (const b of bots) if (b.alive && b.team === "blue" && b.pos.distanceTo(at) < u.radius)
         b.hp = Math.min(b.maxHp, b.hp + u.heal);
+      Sound.playUtility("heal", sndOpts);
       break;
     }
     case "freeze": {
       explode(at, u.radius, u.dmg, 0x9fe8ff);
       addEffect({ kind: "freeze", at, radius: u.radius, life: u.life, color: u.color });
       for (const b of bots) if (b.alive && b.pos.distanceTo(at) < u.radius) b.frozenUntil = time + u.life;
+      Sound.playUtility("freeze", sndOpts);
       break;
     }
     case "pad": {
       addEffect({ kind: "pad", at, radius: u.radius, life: u.life, color: u.color });
+      Sound.playUtility("pad", sndOpts);
       break;
     }
     case "shield": {
       addEffect({ kind: "shield", at, radius: u.radius, life: u.life, color: u.color });
+      Sound.playUtility("shield", sndOpts);
       break;
     }
   }
@@ -2372,6 +2403,7 @@ function botShoot(b, target, dist, D) {
   const gun = GUNS[b.gunKey] || GUNS[role.gun] || GUNS.rifle;
   b.fireKickT = 0.12;   // visual recoil pop on the gun arm, hit or miss (R-VIS)
   fireMuzzleFX(b.gunGroup);   // flash + shell casing + smoke, every shot attempt
+  Sound.playGunshot(GUN_SFX[b.gunKey] || "crack", { pos: b.pos, listenerPos: player.pos, listenerYaw: player.yaw });
 
   // accuracy: role skill × difficulty, falling off with range
   const acc = Math.min(0.95, role.accuracy * D.accuracy * 0.6 - Math.min(0.3, dist / 260));
@@ -3112,6 +3144,7 @@ function castVote(playerPick) {
 }
 
 document.getElementById("playBtn").addEventListener("click", () => {
+  Sound.unlock(); // first reliable user gesture before a match starts (R-AUD)
   // Shooting Range is solo practice — no squad, no map vote, straight in (R-MOD-5)
   if (selMode === "range") {
     currentTime = "day"; currentWeather = "clear";
@@ -3122,6 +3155,26 @@ document.getElementById("playBtn").addEventListener("click", () => {
   openMapVote();
 });
 document.getElementById("exitRangeBtn").addEventListener("click", leaveRange);
+
+// Sound settings — volume slider + mute toggle (R-AUD), persisted in sound.js via localStorage
+const volumeSlider = document.getElementById("volumeSlider");
+const muteBtn = document.getElementById("muteBtn");
+function refreshSoundUI() {
+  volumeSlider.value = Math.round(Sound.getMasterVolume() * 100);
+  muteBtn.textContent = Sound.isMuted() ? "🔇" : "🔊";
+  muteBtn.classList.toggle("muted", Sound.isMuted());
+}
+volumeSlider.addEventListener("input", () => {
+  Sound.unlock();
+  Sound.setMasterVolume(volumeSlider.value / 100);
+  refreshSoundUI();
+});
+muteBtn.addEventListener("click", () => {
+  Sound.unlock();
+  Sound.setMuted(!Sound.isMuted());
+  refreshSoundUI();
+});
+refreshSoundUI();
 
 // Armory (shop + loadout)
 initShop(toast);
@@ -3213,6 +3266,20 @@ function updatePlayer(dt) {
   }
   if (next.y <= groundY) { next.y = groundY; player.vel.y = 0; player.onGround = true; }
   else player.onGround = false;
+
+  // footsteps — surface comes from the current map, cadence from sprint/walk (R-AUD)
+  if (moving && player.onGround && !player.sliding) {
+    const stepRate = wantSprint ? 13 : 8.4;
+    const prevPhase = player._stepPhase || 0;
+    const newPhase = prevPhase + dt * stepRate;
+    if (Math.floor(newPhase / Math.PI) > Math.floor(prevPhase / Math.PI)) {
+      const surface = (MAPS[currentMap] || MAPS.compound).surface || "dirt";
+      Sound.playFootstep(surface, { self: true, sprint: wantSprint });
+    }
+    player._stepPhase = newPhase;
+  } else {
+    player._stepPhase = 0;
+  }
 
   collide(next);
   player.pos.copy(next);

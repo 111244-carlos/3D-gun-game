@@ -52,6 +52,24 @@ html, body {
 .label { display: block; font-size: 12px; text-transform: uppercase; letter-spacing: 1.5px; color: #7d92a8; margin-bottom: 8px; }
 .mode-grid { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; }
 .size-row { display: flex; gap: 8px; flex-wrap: wrap; }
+.sound-row { display: flex; gap: 12px; align-items: center; }
+.volume-slider {
+  flex: 1; height: 6px; border-radius: 3px; appearance: none; -webkit-appearance: none;
+  background: rgba(255, 255, 255, 0.12); outline: none; cursor: pointer;
+}
+.volume-slider::-webkit-slider-thumb {
+  appearance: none; -webkit-appearance: none; width: 16px; height: 16px; border-radius: 50%;
+  background: #4a9dff; cursor: pointer; border: 2px solid #0d1420;
+}
+.volume-slider::-moz-range-thumb {
+  width: 16px; height: 16px; border-radius: 50%; background: #4a9dff; cursor: pointer; border: 2px solid #0d1420;
+}
+.mute-btn {
+  background: rgba(255, 255, 255, 0.05); border: 1px solid rgba(255, 255, 255, 0.12);
+  color: #cdd8e4; width: 40px; height: 36px; border-radius: 10px; font-size: 16px; cursor: pointer; transition: 0.15s;
+}
+.mute-btn:hover { border-color: rgba(120, 170, 255, 0.5); }
+.mute-btn.muted { background: rgba(216, 69, 63, 0.18); border-color: rgba(216, 69, 63, 0.5); }
 .mode-btn, .size-btn, .ctl-btn {
   background: rgba(255, 255, 255, 0.05);
   border: 1px solid rgba(255, 255, 255, 0.12);
