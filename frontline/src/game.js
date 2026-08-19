@@ -72,6 +72,7 @@ let currentTime = "day", currentWeather = "clear";
 const vehicles = [];     // scenery vehicles (not rideable — R-MAP-4)
 const ziplines = [];     // rideable ziplines (forest only — R-MAP-4)
 const debris = [];       // flying chunks from destroyed props (R-MAP-3)
+const drones = [];       // ambient near-future holo-drones (R-MAP-6, purely decorative)
 
 const BLUE_SPAWN = new THREE.Vector3();
 const RED_SPAWN = new THREE.Vector3();
@@ -109,6 +110,45 @@ function addDecor(col, mesh) {
   mapGroup.add(mesh);
   col.extra.push(mesh);
   return mesh;
+}
+
+/**
+ * Faction trim (R-MAP-6): cover/vehicles deep in a team's own half get a thin
+ * glowing strip in that team's color, so each side of an expanded map reads
+ * as visually "theirs" at a glance even though the layout stays symmetric.
+ * No-man's-land (the middle) stays neutral/untrimmed.
+ */
+function factionTrim(col, x, z) {
+  if (Math.abs(z) < MAP * 0.42) return;
+  const team = z < 0 ? 0x4a9dff : 0xff5a5a;
+  const w = Math.max(0.6, Math.min(6, col.max.x - col.min.x));
+  const trim = new THREE.Mesh(
+    new THREE.BoxGeometry(w, 0.14, 0.14),
+    new THREE.MeshStandardMaterial({ color: team, emissive: team, emissiveIntensity: 0.9 })
+  );
+  trim.position.set(x, col.top + 0.1, z);
+  addDecor(col, trim);
+}
+
+/** Ambient floating holo-drone — near-future set dressing only, no collision. */
+function addHoloDrone(x, z, color) {
+  const body = new THREE.Mesh(
+    new THREE.OctahedronGeometry(0.5, 0),
+    new THREE.MeshStandardMaterial({ color: 0x1c2230, emissive: color, emissiveIntensity: 0.75, roughness: 0.4 })
+  );
+  const y = 9 + Math.random() * 6;
+  body.position.set(x, y, z);
+  mapGroup.add(body);
+  drones.push({ mesh: body, baseY: y, phase: Math.random() * Math.PI * 2 });
+}
+
+/** Bob the ambient drones up and down; runs even on the menu backdrop. */
+function updateDrones(dt) {
+  for (const d of drones) {
+    d.phase += dt * 1.2;
+    d.mesh.position.y = d.baseY + Math.sin(d.phase) * 0.6;
+    d.mesh.rotation.y += dt * 0.5;
+  }
 }
 
 /** One piece of themed cover. `breakable` wires up destruction (R-MAP-3). */
@@ -246,6 +286,7 @@ function clearMap() {
   vehicles.length = 0;
   ziplines.length = 0;
   debris.length = 0;
+  drones.length = 0;
   ground = null;
 }
 
@@ -270,31 +311,85 @@ function buildMap(key) {
   grid.material.opacity = 0.35; grid.material.transparent = true;
   mapGroup.add(grid);
 
-  // boundary walls (indestructible)
-  const wall = (x, z, w, d) => addBox(x, z, w, 6, d, def.grid[0], { kind: "wall" });
+  const neon = def.neon || 0x39e6ff;
+
+  // boundary walls (indestructible) — a thin glowing neon trim along the top
+  // edge gives every map its near-future signature (R-MAP-6).
+  const wall = (x, z, w, d) => {
+    const col = addBox(x, z, w, 6, d, def.grid[0], { kind: "wall" });
+    const horiz = w >= d;
+    const trim = new THREE.Mesh(
+      new THREE.BoxGeometry(horiz ? w : 0.16, 0.16, horiz ? 0.16 : d),
+      new THREE.MeshStandardMaterial({ color: neon, emissive: neon, emissiveIntensity: 1.1 })
+    );
+    trim.position.set(x, 6.1, z);
+    addDecor(col, trim);
+    return col;
+  };
   wall(0, -MAP, MAP * 2, 3);
   wall(0, MAP, MAP * 2, 3);
   wall(-MAP, 0, 3, MAP * 2);
   wall(MAP, 0, 3, MAP * 2);
 
-  // scattered cover — style, density and destructibility vary per map
+  // ----- three lanes (left/mid/right) instead of one open field (R-MAP-6) —
+  // staggered, indestructible dividers with gaps near each spawn and across
+  // the midline so players can still cross between lanes; fights spread
+  // across distinct routes instead of clumping in the center. Skipped on the
+  // Range: it's a flat practice ground, not a real map. -----
+  if (def.votable !== false) {
+    const LANE_X = MAP * 0.36;
+    const buildLaneDivider = (side) => {
+      const segLen = 14, gap = 9;
+      let z = -MAP + 26;
+      while (z < MAP - 26) {
+        const nearSpawn = Math.abs(z) > MAP - 34;
+        const nearMid = Math.abs(z) < 12;
+        if (!nearSpawn && !nearMid) {
+          const h = 3.2 + Math.random() * 1.6;
+          const col = addBox(side * LANE_X, z, 3, h, segLen, def.grid[1], { kind: "wall" });
+          const trim = new THREE.Mesh(
+            new THREE.BoxGeometry(0.18, 0.18, segLen),
+            new THREE.MeshStandardMaterial({ color: neon, emissive: neon, emissiveIntensity: 1.2 })
+          );
+          trim.position.set(side * LANE_X, h + 0.12, z);
+          addDecor(col, trim);
+        }
+        z += segLen + gap;
+      }
+    };
+    buildLaneDivider(-1);
+    buildLaneDivider(1);
+  }
+
+  // scattered cover — style, density and destructibility vary per map. Cover
+  // deep in a team's own half gets a faction-colored trim strip (R-MAP-6),
+  // so each side reads visually distinct even though the layout is symmetric.
   for (let i = 0; i < def.coverCount; i++) {
     const x = (Math.random() * 2 - 1) * (MAP - 16);
     const z = (Math.random() * 2 - 1) * (MAP - 30);
     if (Math.abs(z) > MAP - 34) continue;           // keep spawn lanes clear
     const breakable = Math.random() < (def.destructible || 0);
-    addProp(def, x, z, breakable);
+    const col = addProp(def, x, z, breakable);
+    factionTrim(col, x, z);
   }
 
   // scenery vehicles — solid cover, but you can NOT ride them (R-MAP-4)
   for (let i = 0; i < (def.vehicles || 0); i++) {
     const x = (Math.random() * 2 - 1) * (MAP - 24);
     const z = (Math.random() * 2 - 1) * (MAP - 44);
-    addVehicle(x, z);
+    const col = addVehicle(x, z);
+    factionTrim(col, x, z);
   }
 
   // ziplines — forest only, and these ARE rideable (R-MAP-4)
   for (let i = 0; i < (def.ziplines || 0); i++) addZipline();
+
+  // ambient holo-drones — purely decorative near-future flavor (R-MAP-6)
+  for (let i = 0; i < 5; i++) {
+    const x = (Math.random() * 2 - 1) * (MAP - 20);
+    const z = (Math.random() * 2 - 1) * (MAP - 40);
+    addHoloDrone(x, z, neon);
+  }
 
   // respawn zones — indestructible (R-RSP-1). Blue at -Z, Red at +Z.
   const spawnZone = (z, color) => {
@@ -319,13 +414,15 @@ function buildMap(key) {
 
   buildCoverPoints();
   applyEnvironment(currentTime, currentWeather);
+  initEnvironmentCycle();
 }
 
 // ============================================================
 //  TIME OF DAY + WEATHER  (R-MAP-5)
 // ============================================================
-let weatherPoints = null;   // THREE.Points for rain/snow
+let weatherPoints = null;   // THREE.Points for rain/snow/sand
 let weatherKind = null;
+const TIME_SUN_ANGLES = { dawn: [-60, 25, 40], day: [40, 80, 30], dusk: [60, 22, -40], night: [-30, 60, -50] };
 
 /** Darken/tint a hex colour toward night. */
 function tintColor(hex, mul, ambient) {
@@ -355,8 +452,7 @@ function applyEnvironment(timeKey, weatherKey) {
   hemi.intensity = T.hemi * W.dim;
   hemi.color.setHex(T.ambient);
   // move the sun to match the hour
-  const angles = { dawn: [-60, 25, 40], day: [40, 80, 30], dusk: [60, 22, -40], night: [-30, 60, -50] };
-  const a = angles[T.key] || angles.day;
+  const a = TIME_SUN_ANGLES[T.key] || TIME_SUN_ANGLES.day;
   sun.position.set(a[0], a[1], a[2]);
 
   buildWeatherParticles(W);
@@ -382,10 +478,10 @@ function buildWeatherParticles(W) {
   const geo = new THREE.BufferGeometry();
   geo.setAttribute("position", new THREE.BufferAttribute(pos, 3));
   const mat = new THREE.PointsMaterial({
-    color: W.particles === "rain" ? 0xa8c4e0 : 0xffffff,
-    size: W.particles === "rain" ? 0.16 : 0.42,
+    color: W.particles === "rain" ? 0xa8c4e0 : W.particles === "sand" ? 0xd9b878 : 0xffffff,
+    size: W.particles === "rain" ? 0.16 : W.particles === "sand" ? 0.22 : 0.42,
     transparent: true,
-    opacity: W.particles === "rain" ? 0.55 : 0.85,
+    opacity: W.particles === "rain" ? 0.55 : W.particles === "sand" ? 0.5 : 0.85,
     depthWrite: false,
   });
   weatherPoints = new THREE.Points(geo, mat);
@@ -397,18 +493,97 @@ function buildWeatherParticles(W) {
 function updateWeather(dt) {
   if (!weatherPoints) return;
   const arr = weatherPoints.geometry.attributes.position.array;
-  const fall = weatherKind === "rain" ? 55 : 7;
-  const drift = weatherKind === "snow" ? 2.4 : 0.4;
+  const fall = weatherKind === "rain" ? 55 : weatherKind === "sand" ? 1.5 : 7;
+  const drift = weatherKind === "snow" ? 2.4 : weatherKind === "sand" ? 6 : 0.4;
+  const wind = weatherKind === "sand" ? 22 : 0;   // sandstorms blow sideways, not just down
   for (let i = 0; i < arr.length; i += 3) {
     arr[i + 1] -= fall * dt;
-    if (weatherKind === "snow") arr[i] += Math.sin(time * 0.7 + i) * drift * dt;
-    if (arr[i + 1] < 0) {
+    if (weatherKind === "snow" || weatherKind === "sand") arr[i] += Math.sin(time * 0.7 + i) * drift * dt;
+    if (wind) arr[i] += wind * dt;
+    if (arr[i + 1] < 0 || arr[i] > camera.position.x + 90) {
       arr[i + 1] = 55 + Math.random() * 10;
       arr[i] = camera.position.x + (Math.random() * 2 - 1) * 70;
       arr[i + 2] = camera.position.z + (Math.random() * 2 - 1) * 70;
     }
   }
   weatherPoints.geometry.attributes.position.needsUpdate = true;
+}
+
+// ============================================================
+//  DYNAMIC DAY/NIGHT + WEATHER DRIFT  (R-MAP-6) — conditions no longer sit
+//  locked to whatever was picked/rolled at the lobby. Time-of-day smoothly
+//  advances through a dawn→day→dusk→night cycle over the course of a real
+//  match, and weather occasionally rolls a shift too, so a long match can
+//  genuinely start clear at midday and end up in a rainy dusk. Skipped for
+//  the Shooting Range, which stays on its deliberate fixed day/clear setup.
+// ============================================================
+const TIME_CYCLE_ORDER = ["dawn", "day", "dusk", "night"];
+const ENV_PHASE_LEN = 150;                 // seconds a time-of-day phase takes to fully blend into the next
+const ENV_WEATHER_MIN = 90, ENV_WEATHER_MAX = 220; // seconds between weather-shift rolls
+
+let envPhaseT = 0, envFromTime = "day", envToTime = "day";
+let envWeatherT = 0;
+
+function initEnvironmentCycle() {
+  envFromTime = currentTime;
+  const idx = Math.max(0, TIME_CYCLE_ORDER.indexOf(currentTime));
+  envToTime = TIME_CYCLE_ORDER[(idx + 1) % TIME_CYCLE_ORDER.length];
+  envPhaseT = 0;
+  envWeatherT = ENV_WEATHER_MIN + Math.random() * (ENV_WEATHER_MAX - ENV_WEATHER_MIN);
+}
+
+function updateEnvironmentCycle(dt) {
+  if ((MODES[state.mode] || {}).practice) return;   // Range stays fixed
+  const def = MAPS[currentMap] || MAPS.compound;
+  const A = TIMES[envFromTime] || TIMES.day, B = TIMES[envToTime] || TIMES.day;
+  const W = WEATHER[currentWeather] || WEATHER.clear;
+
+  envPhaseT += dt;
+  const t = Math.min(1, envPhaseT / ENV_PHASE_LEN);
+
+  const sunColor = new THREE.Color(A.sunColor).lerp(new THREE.Color(B.sunColor), t);
+  const ambient = new THREE.Color(A.ambient).lerp(new THREE.Color(B.ambient), t);
+  const skyMul = A.skyMul + (B.skyMul - A.skyMul) * t;
+  const sunAmt = A.sun + (B.sun - A.sun) * t;
+  const hemiAmt = A.hemi + (B.hemi - A.hemi) * t;
+
+  const sky = tintColor(def.sky, skyMul, ambient);
+  scene.background = sky;
+  const near = def.fog[0] * W.fogMul, far = def.fog[1] * W.fogMul;
+  scene.fog = new THREE.Fog(sky.getHex(), Math.max(8, near), Math.max(30, far));
+  sun.intensity = sunAmt * W.dim;
+  sun.color.copy(sunColor);
+  hemi.intensity = hemiAmt * W.dim;
+  hemi.color.copy(ambient);
+
+  const aFrom = TIME_SUN_ANGLES[envFromTime] || TIME_SUN_ANGLES.day;
+  const aTo = TIME_SUN_ANGLES[envToTime] || TIME_SUN_ANGLES.day;
+  sun.position.set(
+    aFrom[0] + (aTo[0] - aFrom[0]) * t,
+    aFrom[1] + (aTo[1] - aFrom[1]) * t,
+    aFrom[2] + (aTo[2] - aFrom[2]) * t
+  );
+
+  if (envPhaseT >= ENV_PHASE_LEN) {
+    envPhaseT = 0;
+    envFromTime = envToTime;
+    currentTime = envFromTime;   // HUD/announcements track the phase that's now active
+    const idx = TIME_CYCLE_ORDER.indexOf(envFromTime);
+    envToTime = TIME_CYCLE_ORDER[(idx + 1) % TIME_CYCLE_ORDER.length];
+  }
+
+  // ----- weather can drift mid-match too, not just at deploy -----
+  envWeatherT -= dt;
+  if (envWeatherT <= 0) {
+    envWeatherT = ENV_WEATHER_MIN + Math.random() * (ENV_WEATHER_MAX - ENV_WEATHER_MIN);
+    if (Math.random() < 0.65) {
+      const pool = WEATHER_KEYS.filter((k) => k !== currentWeather);
+      const next = pick(pool);
+      currentWeather = next;
+      buildWeatherParticles(WEATHER[next]);
+      toast(`Weather shifting — ${WEATHER[next].name}`);
+    }
+  }
 }
 
 // ============================================================
@@ -3422,6 +3597,7 @@ function frame(dt) {
 
     for (const b of bots) { tuneRespawn(b); updateBot(b, dt); animateSoldier(b, dt); }
     OBJ.updateObjectives(dt);
+    updateEnvironmentCycle(dt);   // day/night + weather drift over the match (R-MAP-6)
 
     // respawn player (only in modes that allow it — R-RSP-3)
     if (!player.alive && !player.downed && !state.spectating) {
@@ -3437,6 +3613,7 @@ function frame(dt) {
   }
 
   updateWeather(dt);   // keeps falling even on the menu, so the scene looks alive
+  updateDrones(dt);    // ambient holo-drones bob even on the menu backdrop
 
   // fx timers
   if (flashT > 0) { flashT -= dt; if (flashT <= 0) { muzzle.intensity = 0; if (viewGun.userData.flash) viewGun.userData.flash.visible = false; } }

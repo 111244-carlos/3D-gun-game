@@ -192,12 +192,16 @@ export const GUN_LADDER = ["pistol", "smg", "shotgun", "rifle", "burst", "lmg", 
 // destructible: fraction of props that can be shot apart (R-MAP-3)
 // vehicles  : scenery vehicles — solid cover, NOT rideable (R-MAP-4)
 // ziplines  : rideable ziplines — forest only (R-MAP-4)
+// `neon` (R-MAP-6): a near-future accent color used for trim lighting on walls,
+// lane dividers, and holo-drones — gives each expanded map its own sci-fi
+// signature without changing its base palette.
 export const MAPS = {
   compound: {
     key: "compound", name: "Compound",
     ground: 0x5c6b52, sky: 0x9fb8c9, grid: [0x35402f, 0x475239], fog: [60, 220],
     coverCount: 26, coverScale: 1.0, palette: [0x8a6a3f, 0x6f7b63, 0x7a5233, 0x566072],
     prop: "crates", destructible: 0.5, vehicles: 3, ziplines: 0, surface: "dirt",
+    neon: 0x39e6ff,
     desc: "Open military ground with crates and parked vehicles. Balanced.",
   },
   warehouse: {
@@ -205,6 +209,7 @@ export const MAPS = {
     ground: 0x4a4a52, sky: 0x6f7784, grid: [0x2f3138, 0x3d4049], fog: [40, 150],
     coverCount: 40, coverScale: 1.25, palette: [0x7d6444, 0x5a6470, 0x8a5a34, 0x49525c],
     prop: "crates", destructible: 0.7, vehicles: 1, ziplines: 0, surface: "metal",
+    neon: 0xffa63c,
     desc: "Dense stacked crates, tight lanes. Most cover can be shot apart.",
   },
   dunes: {
@@ -212,6 +217,7 @@ export const MAPS = {
     ground: 0xb8a074, sky: 0xdcc9a0, grid: [0x8f7c56, 0xa08c62], fog: [90, 300],
     coverCount: 14, coverScale: 1.5, palette: [0xc2a878, 0xa8905f, 0xd0bb8c, 0x94805a],
     prop: "rocks", destructible: 0.2, vehicles: 2, ziplines: 0, surface: "sand",
+    neon: 0xff6a3c,
     desc: "Wide open sand, long sightlines. Sniper country.",
   },
   forest: {
@@ -219,6 +225,7 @@ export const MAPS = {
     ground: 0x3d5134, sky: 0x93b4a2, grid: [0x2b3a25, 0x36492e], fog: [45, 190],
     coverCount: 34, coverScale: 1.0, palette: [0x5b432c, 0x6a4f33, 0x4e3a26, 0x60482f],
     prop: "trees", destructible: 0.6, vehicles: 2, ziplines: 3, surface: "dirt",
+    neon: 0x39ff8f,
     desc: "Dense woods with RIDEABLE ZIPLINES. Trees can be shot down.",
   },
   snowfield: {
@@ -226,6 +233,7 @@ export const MAPS = {
     ground: 0xdfe7ee, sky: 0xcdd8e2, grid: [0xb4c2cd, 0xc6d2dc], fog: [50, 200],
     coverCount: 20, coverScale: 1.3, palette: [0xa8b4bf, 0xbcc7d1, 0x94a1ad, 0xcfd8e0],
     prop: "rocks", destructible: 0.35, vehicles: 2, ziplines: 0, surface: "snow",
+    neon: 0x6ad4ff,
     desc: "Frozen open ground. Bright, exposed, cold.",
   },
   city: {
@@ -233,6 +241,7 @@ export const MAPS = {
     ground: 0x54565c, sky: 0x8a919b, grid: [0x3a3c42, 0x4a4d54], fog: [40, 170],
     coverCount: 26, coverScale: 1.4, palette: [0x7a6f63, 0x6b7079, 0x87796a, 0x5f6570],
     prop: "buildings", destructible: 0.4, vehicles: 5, ziplines: 0, surface: "metal",
+    neon: 0xd23cff,
     desc: "Street fighting between blocks and burnt-out cars.",
   },
   // Private practice map — flat, empty, built for the Shooting Range mode.
@@ -242,6 +251,7 @@ export const MAPS = {
     ground: 0x6b6558, sky: 0xaecbe0, grid: [0x4a4438, 0x5c5548], fog: [140, 500],
     coverCount: 0, coverScale: 1.0, palette: [0x8a6a3f, 0x6f7b63, 0x7a5233, 0x566072],
     prop: "crates", destructible: 0, vehicles: 0, ziplines: 0, votable: false, surface: "dirt",
+    neon: 0xffffff,
     desc: "A private range with static targets at every distance.",
   },
 };
@@ -257,12 +267,16 @@ export const TIMES = {
 };
 export const TIME_KEYS = Object.keys(TIMES);
 
-// ---------- WEATHER (R-MAP-5) ----------
+// ---------- WEATHER (R-MAP-5/6) ----------
+// sandstorm/storm added so "random" and the mid-match weather drift (R-MAP-6)
+// have real variety to pull from, not just the original four.
 export const WEATHER = {
-  clear: { key: "clear", name: "Clear", particles: null,   count: 0,    fogMul: 1.00, dim: 1.00 },
-  rain:  { key: "rain",  name: "Rain",  particles: "rain", count: 2200, fogMul: 0.60, dim: 0.75 },
-  fog:   { key: "fog",   name: "Fog",   particles: null,   count: 0,    fogMul: 0.32, dim: 0.85 },
-  snow:  { key: "snow",  name: "Snow",  particles: "snow", count: 1400, fogMul: 0.55, dim: 0.90 },
+  clear:     { key: "clear",     name: "Clear",     particles: null,   count: 0,    fogMul: 1.00, dim: 1.00 },
+  rain:      { key: "rain",      name: "Rain",      particles: "rain", count: 2200, fogMul: 0.60, dim: 0.75 },
+  fog:       { key: "fog",       name: "Fog",       particles: null,   count: 0,    fogMul: 0.32, dim: 0.85 },
+  snow:      { key: "snow",      name: "Snow",      particles: "snow", count: 1400, fogMul: 0.55, dim: 0.90 },
+  sandstorm: { key: "sandstorm", name: "Sandstorm", particles: "sand", count: 1800, fogMul: 0.22, dim: 0.60 },
+  storm:     { key: "storm",     name: "Storm",     particles: "rain", count: 3200, fogMul: 0.42, dim: 0.55 },
 };
 export const WEATHER_KEYS = Object.keys(WEATHER);
 
