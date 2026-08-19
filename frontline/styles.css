@@ -292,6 +292,33 @@ html, body {
 .crosshair i:nth-child(4) { top: 50%; right: 0; height: 2px; width: 8px; transform: translateY(-50%); }
 .crosshair { transition: width 0.08s, height 0.08s; }
 
+/* sniper/scoped-weapon reticle (R-CMB-4) — a round scope tube with a
+   soft-edged vignette and a mil-dot ranging crosshair, matching a classic
+   scope-overlay look. Everything outside the circular "glass" is solid
+   black so the rest of the screen is genuinely blocked out while scoped. */
+.scope-overlay {
+  position: fixed; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  pointer-events: none;
+  z-index: 30;
+}
+.scope-ring {
+  width: 92vmin; height: 92vmin;
+  border-radius: 50%;
+  background: radial-gradient(circle,
+    transparent 0%, transparent 58%,
+    rgba(0,0,0,0.18) 64%, rgba(0,0,0,0.6) 72%,
+    #000 84%, #000 100%);
+  box-shadow: 0 0 0 9999px #000;
+}
+.scope-reticle {
+  position: absolute; left: 50%; top: 50%;
+  width: 92vmin; height: 92vmin;
+  transform: translate(-50%, -50%);
+}
+.scope-reticle circle { fill: none; stroke: #0c0c0c; stroke-width: 0.5; }
+.scope-reticle line { stroke: #0c0c0c; stroke-width: 0.45; }
+
 .hitmarker { opacity: 0; }
 .hitmarker.show { animation: hit 0.25s ease-out; }
 .hitmarker i { width: 3px; height: 9px; background: #fff; }

@@ -40,7 +40,18 @@ function resize() {
   camera.updateProjectionMatrix();
 }
 window.addEventListener("resize", resize);
+window.addEventListener("fullscreenchange", resize);
 resize();
+
+/** Ask the browser to go true fullscreen (hides the tab bar/address bar too,
+ * not just fills the page) — must run inside a real user-click handler.
+ * Silently no-ops if the browser blocks it or it's already fullscreen. */
+function goFullscreen() {
+  const el = document.documentElement;
+  if (document.fullscreenElement) return;
+  const req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
+  if (req) req.call(el).catch(() => {});
+}
 
 // ============================================================
 //  LIGHTING
@@ -2245,6 +2256,7 @@ function playerDie() {
   }
 }
 function respawnPlayer() {
+  if (scopeActive) unscope();
   player.alive = true;
   player.hp = player.maxHp;
   player.pos.copy(BLUE_SPAWN).add(new THREE.Vector3(Math.random() * 8 - 4, 0, Math.random() * 6 - 3));
@@ -2620,6 +2632,7 @@ const downedHintEl = document.getElementById("downedHint");
 const reviveFillEl = document.getElementById("reviveFill");
 
 function updateDowned(dt) {
+  if (scopeActive) unscope();
   player.bleed -= dt;
   bleedCountEl.textContent = Math.max(0, Math.ceil(player.bleed));
   reviveFillEl.style.width = (Math.min(1, player.reviveProgress) * 100) + "%";
@@ -3128,6 +3141,18 @@ const ammoReserve = document.getElementById("ammoReserve");
 const weaponNameEl = document.getElementById("weaponName");
 const coinsEl = document.getElementById("coins");
 const crosshairEl = document.getElementById("crosshair");
+const scopeOverlayEl = document.getElementById("scopeOverlay");
+let scopeActive = false;
+/** Force the scope reticle off and restore normal FOV — used when the player
+ * can no longer be aiming (downed, respawning) since updatePlayer (the only
+ * place that normally toggles it) doesn't run in those states. */
+function unscope() {
+  scopeActive = false;
+  scopeOverlayEl.classList.add("hidden");
+  crosshairEl.classList.remove("hidden");
+  camera.fov = 75;
+  camera.updateProjectionMatrix();
+}
 const blueScoreEl = document.getElementById("blueScore");
 const redScoreEl = document.getElementById("redScore");
 const respawnCount = document.getElementById("respawnCount");
@@ -3368,7 +3393,7 @@ function openMapVote() {
       <b>${def.name}</b>
       <small>${def.desc}</small>
       <span class="tally"></span>`;
-    el.addEventListener("click", () => castVote(key));
+    el.addEventListener("click", () => { goFullscreen(); castVote(key); });
     voteOptions.appendChild(el);
   }
 }
@@ -3406,6 +3431,7 @@ function castVote(playerPick) {
 
 document.getElementById("playBtn").addEventListener("click", () => {
   Sound.unlock(); // first reliable user gesture before a match starts (R-AUD)
+  goFullscreen();  // this click is a real user gesture — fullscreen only works from here
   // Shooting Range is solo practice — no squad, no map vote, straight in (R-MOD-5)
   if (selMode === "range") {
     currentTime = "day"; currentWeather = "clear";
@@ -3566,6 +3592,23 @@ function updatePlayer(dt) {
   const attsNow = (profile.attachments && profile.attachments[wk]) || [];
   const sig = wk + ":" + attsNow.join(",");
   if (sig !== viewGunSig) { rebuildViewGun(wk, attsNow); viewGunSig = sig; }
+
+  // ----- scoped ADS (R-CMB-4): sniper/DMR (built-in scope) or any gun with a
+  // scope attachment narrow the FOV and swap the plain crosshair for a round
+  // scope reticle while aiming, instead of just a tighter default crosshair. -----
+  const gs = statsFor(wk);
+  const scopeZoom = (player.ads && gs.zoom > 1) ? gs.zoom : 1;
+  const targetFov = 75 / scopeZoom;
+  if (Math.abs(camera.fov - targetFov) > 0.02) {
+    camera.fov += (targetFov - camera.fov) * Math.min(1, dt * 12);
+    camera.updateProjectionMatrix();
+  }
+  const scoped = scopeZoom > 1;
+  if (scoped !== scopeActive) {
+    scopeActive = scoped;
+    scopeOverlayEl.classList.toggle("hidden", !scoped);
+    crosshairEl.classList.toggle("hidden", scoped);
+  }
 }
 
 // ============================================================
