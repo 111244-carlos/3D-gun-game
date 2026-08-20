@@ -21,6 +21,7 @@ function defaults() {
     attachments: {},                 // gunKey -> [attachmentKey]
     ownedAttachments: {},            // gunKey -> [attachmentKey] (purchased)
     loadout: ["rifle", "pistol", "fist", "frag"],   // R-LDO-1
+    role: "rusher",                                 // drives weapon eligibility (R-GUN-5)
     stats: { kills: 0, wins: 0, losses: 0, streak: 0, bestStreak: 0 },
     // ranked meta (R-RNK)
     rr: 0,

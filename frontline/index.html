@@ -128,7 +128,7 @@
         </div>
 
         <button id="playBtn" class="play-btn">DEPLOY</button>
-        <p class="hint">WASD move · Shift sprint · Space jump · C slide · Left-click fire · Right-click aim · R reload<br>1-4 switch slots (4 = throwable) · Buy gear in the Armory</p>
+        <p class="hint">WASD move · Shift sprint · Space jump · C slide · Left-click fire · Right-click aim · R reload<br>E enter/exit vehicles (drive with WASD) · 1-4 switch slots (4 = throwable) · Buy gear in the Armory</p>
       </div>
     </div>
 
@@ -297,6 +297,21 @@
       <!-- zipline prompt (forest maps) -->
       <div id="ziplinePrompt" class="revive-prompt hidden">
         <b>E</b> <span>Ride the zipline</span>
+      </div>
+
+      <!-- vehicle prompt (walk up to any vehicle) -->
+      <div id="vehiclePrompt" class="revive-prompt vehicle-prompt hidden">
+        <b>E</b> <span id="vehiclePromptText">Drive the Jeep</span>
+      </div>
+
+      <!-- vehicle panel while driving/riding -->
+      <div id="vehicleHud" class="vehicle-hud hidden">
+        <div class="vehicle-hud-top">
+          <span id="vehicleHudName">Jeep</span>
+          <span id="vehicleHudSpeed">0 km/h</span>
+        </div>
+        <div class="vehicle-hud-bar"><i id="vehicleHudFill"></i></div>
+        <div class="vehicle-hud-hint">WASD drive · E exit</div>
       </div>
 
       <!-- revive prompt (standing over a downed ally) -->

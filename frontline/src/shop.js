@@ -1,5 +1,6 @@
 // FRONTLINE — Armory UI: shop + loadout editor (R-LDO, R-ECO-4, R-PRG)
 import { GUNS, UTILS, ATTACHMENTS, ARMOR, SLOT_LABELS, MAX_GUN_LEVEL, gunLevelCost, gunStats,
+         roleCanUse, gunPerks, GUN_LEVEL_PERKS,
          RANKS, SKINS, SKIN_KEYS, RARITY } from "./data.js";
 import * as P from "./profile.js";
 
@@ -110,10 +111,17 @@ function renderLoadout() {
         h += chip(UTILS[k].name, cur === k, `data-equip="${k}" data-slot="3"`);
       }
     } else {
+      const role = profile.role || "rusher";
       const opts = profile.ownedGuns.filter(k => GUNS[k].slot === slot);
-      for (const k of opts) {
+      const usable = opts.filter(k => roleCanUse(k, role));
+      const locked = opts.filter(k => !roleCanUse(k, role));
+      for (const k of usable) {
         const lv = P.gunLevel(k);
         h += chip(GUNS[k].name + (lv > 1 ? ` <i>Lv${lv}</i>` : ""), cur === k, `data-equip="${k}" data-slot="${slot}"`);
+      }
+      // owned but wrong role — shown greyed out so you know why it's missing (R-GUN-5)
+      for (const k of locked) {
+        h += `<button class="chip locked" disabled title="${GUNS[k].roles.join(" / ")} only">${GUNS[k].name} 🔒</button>`;
       }
     }
     h += `</div></div>`;
@@ -142,6 +150,7 @@ function renderGuns() {
           <span>RPM <b>${g.rpm}</b></span>
           <span>MAG <b>${g.melee ? "—" : s.mag}</b></span>
         </div>
+        <div class="role-tag">${g.roles ? g.roles.join(" · ") : "any role"}${g.alt ? " · alt fire" : ""}</div>
         ${owned ? `<button class="mini" data-equip="${k}" data-slot="${slot}">Equip</button>`
                 : `<button class="mini buy" data-buy-gun="${k}">Buy</button>`}
       </div>`;

@@ -5,6 +5,9 @@ import { GUNS, UTILS, ARMOR, UTIL_COOLDOWN, XP, COINS, gunStats,
          ROLES, ROLE_KEYS, DIFFICULTY, REVIVE,
          MODES, MAPS, MAP_KEYS, GUN_LADDER,
          TIMES, TIME_KEYS, WEATHER, WEATHER_KEYS, PROP_HP,
+         VEHICLES, VEHICLE_KEYS, VEHICLE_RESPAWN,
+         FALLOFF, HEADSHOT, falloffMul, FIRE_MODES, applyFireMode,
+         roleCanUse, gunsForRole, GUN_LEVEL_PERKS, gunPerks,
          RANKS, SKINS, RARITY, streakHardening } from "./data.js";
 import * as OBJ from "./objectives.js";
 import * as P from "./profile.js";
@@ -50,8 +53,26 @@ function goFullscreen() {
   const el = document.documentElement;
   if (document.fullscreenElement) return;
   const req = el.requestFullscreen || el.webkitRequestFullscreen || el.msRequestFullscreen;
-  if (req) req.call(el).catch(() => {});
+  if (!req) return;
+  const result = req.call(el);
+  if (result && result.catch) result.catch(() => {});
 }
+
+// Browsers only allow requestFullscreen() from inside a real user gesture —
+// no site can auto-fullscreen on load, that's a security restriction in every
+// browser, not something specific to this game. To make it happen as early as
+// possible, trigger on the player's very FIRST click or key press anywhere on
+// the page (not just the Play button), then stop listening.
+function armAutoFullscreenOnFirstInput() {
+  const trigger = () => { goFullscreen(); cleanup(); };
+  const cleanup = () => {
+    window.removeEventListener("pointerdown", trigger, true);
+    window.removeEventListener("keydown", trigger, true);
+  };
+  window.addEventListener("pointerdown", trigger, true);
+  window.addEventListener("keydown", trigger, true);
+}
+armAutoFullscreenOnFirstInput();
 
 // ============================================================
 //  LIGHTING
@@ -212,30 +233,174 @@ function addProp(def, x, z, breakable) {
   return addBox(x, z, w, h, d, color, { hp, kind: "crate" });
 }
 
-/** Scenery vehicle: blocks bullets and movement, but is not driveable (R-MAP-4). */
-function addVehicle(x, z) {
-  const body = addBox(x, z, 6.5, 2.2, 3.2, 0x4d5348, { hp: PROP_HP.vehicle, kind: "vehicle" });
-  body.mesh.rotation.y = Math.random() * Math.PI;
+// ============================================================
+//  DRIVABLE VEHICLES  (R-VEH-1) — models
+//  Built facing +Z (nose forward), centred on the origin, so the whole group
+//  can just be positioned + yaw-rotated as a rigid body every frame.
+// ============================================================
+const VEH_WHEEL_MAT = new THREE.MeshStandardMaterial({ color: 0x1b1d20, roughness: 1 });
+const VEH_GLASS_MAT = new THREE.MeshStandardMaterial({
+  color: 0x2b3038, emissive: 0x1b2028, emissiveIntensity: 0.35, roughness: 0.35,
+});
 
-  const cab = new THREE.Mesh(
-    new THREE.BoxGeometry(3.2, 1.6, 3.0),
-    new THREE.MeshStandardMaterial({ color: 0x3f4a3c, roughness: 0.8 })
-  );
-  cab.position.set(x, 3.0, z);
-  cab.rotation.y = body.mesh.rotation.y;
-  cab.castShadow = true;
-  addDecor(body, cab);
+function buildVehicleModel(def) {
+  const grp = new THREE.Group();
+  const wheels = [];
+  const bodyMat = new THREE.MeshStandardMaterial({ color: def.body, roughness: 0.85 });
+  const trimMat = new THREE.MeshStandardMaterial({ color: def.trim, roughness: 0.9 });
 
-  const wheelMat = new THREE.MeshStandardMaterial({ color: 0x1b1d20, roughness: 1 });
-  for (const [ox, oz] of [[-2.2, -1.6], [2.2, -1.6], [-2.2, 1.6], [2.2, 1.6]]) {
-    const w = new THREE.Mesh(new THREE.CylinderGeometry(0.85, 0.85, 0.6, 12), wheelMat);
-    w.rotation.z = Math.PI / 2;
-    w.position.set(x + ox, 0.85, z + oz);
-    addDecor(body, w);
+  const box = (w, h, d, mat, x, y, z) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat);
+    m.position.set(x, y, z);
+    m.castShadow = true; m.receiveShadow = true;
+    grp.add(m);
+    return m;
+  };
+  const wheel = (x, y, z, r, width) => {
+    const m = new THREE.Mesh(new THREE.CylinderGeometry(r, r, width || 0.6, 12), VEH_WHEEL_MAT);
+    m.rotation.z = Math.PI / 2;
+    m.position.set(x, y, z);
+    m.castShadow = true;
+    grp.add(m);
+    wheels.push(m);
+    return m;
+  };
+
+  const L = def.len, W = def.wid, T = def.tall;
+  let chassis;
+
+  if (def.style === "bike") {
+    chassis = box(W * 0.55, T * 0.30, L * 0.72, bodyMat, 0, T * 0.52, 0);
+    box(W * 0.5, T * 0.22, L * 0.26, trimMat, 0, T * 0.72, -L * 0.14);          // seat
+    box(W * 1.5, 0.12, 0.12, trimMat, 0, T * 0.82, L * 0.3);                    // handlebars
+    box(0.14, T * 0.5, 0.14, trimMat, 0, T * 0.6, L * 0.32);                    // fork
+    wheel(0, T * 0.34, L * 0.36, T * 0.34, 0.3);
+    wheel(0, T * 0.34, -L * 0.36, T * 0.34, 0.3);
+  } else if (def.style === "apc") {
+    // sloped armoured hull + cupola, six road wheels
+    chassis = box(W, T * 0.52, L * 0.92, bodyMat, 0, T * 0.42, 0);
+    box(W * 0.86, T * 0.30, L * 0.55, trimMat, 0, T * 0.80, -L * 0.06);         // upper deck
+    box(W * 0.42, T * 0.22, W * 0.42, trimMat, 0, T * 1.02, -L * 0.10);         // cupola
+    box(W * 0.9, T * 0.20, 0.3, VEH_GLASS_MAT, 0, T * 0.66, L * 0.45);          // vision block
+    box(W * 1.02, 0.35, 0.5, trimMat, 0, T * 0.30, L * 0.47);                   // front plate
+    for (const oz of [L * 0.34, 0, -L * 0.34]) {
+      wheel(-W * 0.52, T * 0.24, oz, T * 0.24);
+      wheel(W * 0.52, T * 0.24, oz, T * 0.24);
+    }
+  } else if (def.style === "truck") {
+    chassis = box(W, T * 0.34, L * 0.95, bodyMat, 0, T * 0.36, 0);              // frame
+    box(W * 0.94, T * 0.42, L * 0.30, trimMat, 0, T * 0.72, L * 0.3);           // cab
+    box(W * 0.8, T * 0.24, 0.22, VEH_GLASS_MAT, 0, T * 0.78, L * 0.45);         // windscreen
+    box(W * 0.98, T * 0.46, L * 0.5, trimMat, 0, T * 0.78, -L * 0.2);           // canopy
+    for (const oz of [L * 0.36, -L * 0.12, -L * 0.36]) {
+      wheel(-W * 0.5, T * 0.22, oz, T * 0.22);
+      wheel(W * 0.5, T * 0.22, oz, T * 0.22);
+    }
+  } else if (def.style === "buggy") {
+    chassis = box(W * 0.9, T * 0.34, L * 0.9, bodyMat, 0, T * 0.42, 0);
+    box(W * 0.7, T * 0.22, L * 0.3, trimMat, 0, T * 0.66, -L * 0.05);           // seats
+    // roll cage
+    box(0.12, T * 0.6, 0.12, trimMat, -W * 0.34, T * 0.85, -L * 0.02);
+    box(0.12, T * 0.6, 0.12, trimMat, W * 0.34, T * 0.85, -L * 0.02);
+    box(W * 0.76, 0.12, 0.12, trimMat, 0, T * 1.12, -L * 0.02);
+    box(W * 1.0, 0.25, 0.35, trimMat, 0, T * 0.36, L * 0.45);                   // bumper
+    wheel(-W * 0.52, T * 0.32, L * 0.32, T * 0.32);
+    wheel(W * 0.52, T * 0.32, L * 0.32, T * 0.32);
+    wheel(-W * 0.52, T * 0.32, -L * 0.32, T * 0.32);
+    wheel(W * 0.52, T * 0.32, -L * 0.32, T * 0.32);
+  } else {
+    // jeep (default)
+    chassis = box(W, T * 0.44, L * 0.92, bodyMat, 0, T * 0.44, 0);
+    box(W * 0.88, T * 0.34, L * 0.42, trimMat, 0, T * 0.80, -L * 0.08);         // cab
+    box(W * 0.78, T * 0.24, 0.2, VEH_GLASS_MAT, 0, T * 0.84, L * 0.14);         // windscreen
+    box(W * 1.02, 0.28, 0.4, trimMat, 0, T * 0.34, L * 0.46);                   // bumper
+    wheel(-W * 0.52, T * 0.28, L * 0.3, T * 0.28);
+    wheel(W * 0.52, T * 0.28, L * 0.3, T * 0.28);
+    wheel(-W * 0.52, T * 0.28, -L * 0.3, T * 0.28);
+    wheel(W * 0.52, T * 0.28, -L * 0.3, T * 0.28);
   }
-  body.vehicle = true;
-  vehicles.push(body);
-  return body;
+
+  grp.userData.wheels = wheels;
+  grp.userData.body = chassis;   // the mesh bullets raycast against
+  return grp;
+}
+
+/**
+ * Spawn a drivable vehicle (R-VEH-1). Unlike the old scenery props these are
+ * rigid bodies: the group is moved/rotated every frame and its axis-aligned
+ * collider is recomputed to match, so it still blocks people and bullets.
+ */
+function addVehicle(x, z, typeKey) {
+  const key = typeKey || VEHICLE_KEYS[(Math.random() * VEHICLE_KEYS.length) | 0];
+  const def = VEHICLES[key] || VEHICLES.jeep;
+  const grp = buildVehicleModel(def);
+  grp.position.set(x, 0, z);
+  grp.rotation.y = Math.random() * Math.PI * 2;
+  mapGroup.add(grp);
+
+  const v = {
+    key, def, group: grp,
+    pos: new THREE.Vector3(x, 0, z),
+    yaw: grp.rotation.y,
+    speed: 0,                     // signed: negative = reversing
+    hp: def.hp, maxHp: def.hp,
+    alive: true,
+    driver: null,                 // player object or a bot
+    occupants: [],                // includes the driver
+    wheels: grp.userData.wheels,
+    wheelSpin: 0,
+    respawnAt: 0,
+  };
+
+  const col = {
+    min: { x: x - def.wid / 2, z: z - def.len / 2 },
+    max: { x: x + def.wid / 2, z: z + def.len / 2 },
+    top: def.tall,
+    mesh: grp.userData.body,
+    extra: [],
+    hp: 0, maxHp: 0, destructible: false, broken: false,
+    kind: "vehicle",
+    vehicle: v,
+  };
+  grp.userData.body.userData.collider = col;
+  v.col = col;
+  colliders.push(col);
+  solids.push(grp.userData.body);
+  wmCache = null;
+  syncVehicleCollider(v);
+
+  vehicles.push(v);
+  return v;
+}
+
+/**
+ * Is there room to drop a vehicle of this type at (x,z)? Checks real cover
+ * (walls, crates, buildings…) as well as the other vehicles, so nothing
+ * spawns wedged inside a crate where it could never drive out.
+ */
+function vehicleSpotClear(def, x, z) {
+  const r = Math.max(def.len, def.wid) / 2 + 1.5;
+  // never park on top of a respawn pad — you'd spawn inside the chassis
+  if (Math.hypot(x - BLUE_SPAWN.x, z - BLUE_SPAWN.z) < 15) return false;
+  if (Math.hypot(x - RED_SPAWN.x, z - RED_SPAWN.z) < 15) return false;
+  for (const col of colliders) {
+    if (col.top < 0.8) continue;
+    if (x + r > col.min.x && x - r < col.max.x && z + r > col.min.z && z - r < col.max.z) return false;
+  }
+  for (const o of vehicles) {
+    if (Math.hypot(o.pos.x - x, o.pos.z - z) < 14) return false;
+  }
+  return true;
+}
+
+/** Recompute a vehicle's axis-aligned collision box from its current yaw. */
+function syncVehicleCollider(v) {
+  const c = Math.abs(Math.cos(v.yaw)), s = Math.abs(Math.sin(v.yaw));
+  const hw = v.def.wid / 2, hl = v.def.len / 2;
+  const ex = hw * c + hl * s;
+  const ez = hw * s + hl * c;
+  v.col.min.x = v.pos.x - ex; v.col.max.x = v.pos.x + ex;
+  v.col.min.z = v.pos.z - ez; v.col.max.z = v.pos.z + ez;
 }
 
 /** A rideable zipline between two towers (forest maps only — R-MAP-4). */
@@ -283,8 +448,30 @@ function addZipline() {
   ziplines.push({ start, end, length: dir.length(), marker });
 }
 
+/**
+ * Drop every reference to the vehicles that are about to be destroyed.
+ * Ending a match while you were still sitting in one used to leave
+ * player.vehicle pointing at a vehicle that no longer exists, which pinned
+ * the next match in the third-person "driving" branch forever — no movement,
+ * no first-person view, no shooting. This runs before any teardown.
+ */
+function resetVehicleState() {
+  player.vehicle = null;
+  player._eLatch = false;
+  player._ramCd = 0;
+  if (typeof viewGun !== "undefined" && viewGun) viewGun.visible = true;
+  if (typeof vehicleHudEl !== "undefined" && vehicleHudEl) vehicleHudEl.classList.add("hidden");
+  if (typeof vehiclePromptEl !== "undefined" && vehiclePromptEl) vehiclePromptEl.classList.add("hidden");
+  for (const b of bots) {
+    if (!b) continue;
+    b.vehicle = null; b.driveTo = null; b.vehSeat = 0; b.vehicleCd = Math.random() * 3;
+  }
+  for (const v of vehicles) { v.driver = null; v.occupants.length = 0; }
+}
+
 /** Tear down the current map so another can be built in its place. */
 function clearMap() {
+  resetVehicleState();
   for (const child of [...mapGroup.children]) {
     mapGroup.remove(child);
     child.geometry?.dispose?.();
@@ -384,12 +571,23 @@ function buildMap(key) {
     factionTrim(col, x, z);
   }
 
-  // scenery vehicles — solid cover, but you can NOT ride them (R-MAP-4)
-  for (let i = 0; i < (def.vehicles || 0); i++) {
-    const x = (Math.random() * 2 - 1) * (MAP - 24);
-    const z = (Math.random() * 2 - 1) * (MAP - 44);
-    const col = addVehicle(x, z);
-    factionTrim(col, x, z);
+  // ----- drivable vehicles (R-VEH-1): 5 per map, scattered, mixed types.
+  // Spread across the three lanes and both halves so neither team starts on
+  // top of all of them, and nudged away from each other so two don't spawn
+  // interlocked. Each is a different type where possible. -----
+  const vehCount = def.vehicles || 0;
+  const typePool = VEHICLE_KEYS.slice();
+  for (let i = 0; i < vehCount; i++) {
+    const typeKey = typePool.length ? typePool.splice((Math.random() * typePool.length) | 0, 1)[0]
+                                    : VEHICLE_KEYS[(Math.random() * VEHICLE_KEYS.length) | 0];
+    const vd = VEHICLES[typeKey];
+    let x = 0, z = 0, placed = false;
+    for (let attempt = 0; attempt < 60; attempt++) {
+      x = (Math.random() * 2 - 1) * (MAP - 20);
+      z = (Math.random() * 2 - 1) * (MAP - 18);
+      if (vehicleSpotClear(vd, x, z)) { placed = true; break; }
+    }
+    if (placed) addVehicle(x, z, typeKey);
   }
 
   // ziplines — forest only, and these ARE rideable (R-MAP-4)
@@ -601,7 +799,14 @@ function updateEnvironmentCycle(dt) {
 //  WEAPONS — catalog-driven (Phase 2). Stats include gun level + attachments.
 // ============================================================
 /** Effective stats for the gun in a given slot of the player's live loadout. */
-function statsFor(key) { return gunStats(key, profile); }
+function statsFor(key) {
+  const base = gunStats(key, profile);
+  if (!base) return base;
+  // alt fire mode is a Lv3 unlock and is toggled per-gun with V (R-GUN-1/4)
+  const mode = player.fireModes && player.fireModes[key];
+  if (mode && base.altUnlocked) return applyFireMode(base, mode);
+  return base;
+}
 
 // ============================================================
 //  BOTS  — allies & enemies
@@ -658,11 +863,25 @@ const GUN_VISUALS = {
   dmr:      { len: 1.35, thick: 0.15, color: 0x3f4033, accent: 0x565645, family: "sniper", scope: "med" },
   autoshot: { len: 0.85, thick: 0.24, color: 0x44351f, accent: 0x2a2118, family: "shotgun", boxmag: true },
   bullpup:  { len: 0.85, thick: 0.18, color: 0x1f2320, accent: 0x2c332c, family: "bullpup", scope: "small" },
+  // ---- new weapons (R-GUN-1) ----
+  rocket:   { len: 1.70, thick: 0.30, color: 0x39412f, accent: 0x4e5a3d, family: "launcher", scope: "small" },
+  gl:       { len: 1.10, thick: 0.28, color: 0x2f3830, accent: 0x424d3f, family: "launcher", drum: true },
+  minigun:  { len: 1.55, thick: 0.34, color: 0x1a1d20, accent: 0x2e3338, family: "minigun" },
+  flamer:   { len: 1.05, thick: 0.22, color: 0x50331f, accent: 0x6b4526, family: "flamer" },
+  laserrifle:{ len: 1.15, thick: 0.18, color: 0x20262e, accent: 0x39e6ff, family: "energy", glow: 0x66e0ff },
+  laserpistol:{ len: 0.55, thick: 0.15, color: 0x222a33, accent: 0x39e6ff, family: "energy", glow: 0x66e0ff },
+  crossbow: { len: 1.05, thick: 0.14, color: 0x2c2a24, accent: 0x6b5a3c, family: "crossbow", scope: "small" },
+  marksman: { len: 1.40, thick: 0.15, color: 0x2a2e28, accent: 0x3c4238, family: "sniper", scope: "med" },
+  handcannon:{ len: 0.62, thick: 0.19, color: 0x22252a, accent: 0x6a6f78, family: "smg" },
 };
+
 // which procedural gunshot profile (defined in sound.js) each weapon key uses —
 // separate from GUN_VISUALS.family so secondary-only guns (no 3D model family)
 // still get their own sound (R-AUD).
 const GUN_SFX = {
+  rocket: "boom", gl: "boom", minigun: "crack", flamer: "pop",
+  laserrifle: "snap", laserpistol: "snap", crossbow: "pop",
+  marksman: "sharpcrack", handcannon: "boom",
   rifle: "crack", burst: "crack", carbine: "crack", bullpup: "crack", lmg: "crack",
   smg: "snap", machinep: "snap",
   shotgun: "boom", autoshot: "boom", sawedoff: "boom",
@@ -713,10 +932,12 @@ function buildGunModel(gunKey, opts) {
   const grp = new THREE.Group();
   const fz = (v) => v * facing; // mirror z-offsets for first-person (facing=-1)
 
-  const add = (geo, mat, x, y, z, rx) => {
+  const add = (geo, mat, x, y, z, rx, ry, rz) => {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, fz(z));
     if (rx) m.rotation.x = rx;
+    if (ry) m.rotation.y = ry;
+    if (rz) m.rotation.z = rz;
     grp.add(m);
     return m;
   };
@@ -759,6 +980,55 @@ function buildGunModel(gunKey, opts) {
     // mag sits BEHIND the grip — the bullpup signature silhouette
     magY = -T * 1.4; magZ = -L * 0.22; magH = 0.5;
     stockLen = 0; // no separate stock — receiver runs to the rear of the gun
+  } else if (fam === "launcher") {
+    // fat smooth-bore tube with a shoulder rest — reads instantly as ordnance
+    add(new THREE.CylinderGeometry(T * 0.62, T * 0.62, L * 0.86, 10), METAL_DARK_MAT, 0, T * 0.2, L * 0.06, Math.PI / 2);
+    add(new THREE.CylinderGeometry(T * 0.74, T * 0.62, L * 0.12, 10), aMat, 0, T * 0.2, L * 0.5, Math.PI / 2);   // muzzle flare
+    add(new THREE.CylinderGeometry(T * 0.7, T * 0.7, L * 0.1, 10), aMat, 0, T * 0.2, -L * 0.44, Math.PI / 2);    // rear venturi
+    if (gv.drum) add(new THREE.CylinderGeometry(T * 0.66, T * 0.66, T * 0.5, 10), aMat, 0, -T * 0.5, L * 0.02, 0);
+    add(new THREE.BoxGeometry(T * 0.24, T * 0.4, L * 0.24), aMat, 0, T * 0.95, -L * 0.02);   // top rail/optic
+    magH = 0;
+  } else if (fam === "minigun") {
+    // rotating barrel cluster + big receiver housing
+    for (let i = 0; i < 6; i++) {
+      const a = (i / 6) * Math.PI * 2;
+      add(new THREE.CylinderGeometry(T * 0.11, T * 0.11, L * 0.72, 6),
+          METAL_DARK_MAT, Math.cos(a) * T * 0.3, T * 0.15 + Math.sin(a) * T * 0.3, L * 0.3, Math.PI / 2);
+    }
+    add(new THREE.BoxGeometry(T * 0.9, T * 0.9, L * 0.4), bMat, 0, T * 0.15, -L * 0.16);
+    add(new THREE.CylinderGeometry(T * 0.5, T * 0.5, T * 0.4, 10), aMat, 0, -T * 0.6, -L * 0.2, 0);   // ammo drum
+    magH = 0;
+  } else if (fam === "flamer") {
+    add(new THREE.CylinderGeometry(T * 0.17, T * 0.17, L * 0.8, 8), METAL_DARK_MAT, 0, T * 0.05, L * 0.2, Math.PI / 2);
+    add(new THREE.CylinderGeometry(T * 0.3, T * 0.22, L * 0.14, 8), aMat, 0, T * 0.05, L * 0.56, Math.PI / 2);  // nozzle
+    // twin fuel tanks slung under the body
+    for (const side of [-1, 1]) {
+      add(new THREE.CylinderGeometry(T * 0.32, T * 0.32, L * 0.44, 8), aMat, side * T * 0.34, -T * 0.7, -L * 0.16, Math.PI / 2);
+    }
+    add(new THREE.CylinderGeometry(0.03, 0.03, L * 0.4, 5), METAL_DARK_MAT, 0, -T * 0.35, L * 0.1, Math.PI / 2); // fuel line
+    magH = 0;
+  } else if (fam === "energy") {
+    // slim housing with a glowing emitter and side cells
+    const glowMat = new THREE.MeshStandardMaterial({
+      color: gv.glow || 0x66e0ff, emissive: gv.glow || 0x66e0ff, emissiveIntensity: 1.1,
+    });
+    add(new THREE.BoxGeometry(T * 0.5, T * 0.5, L * 0.6), METAL_DARK_MAT, 0, T * 0.1, L * 0.12);
+    add(new THREE.CylinderGeometry(T * 0.14, T * 0.2, L * 0.26, 8), glowMat, 0, T * 0.1, L * 0.5, Math.PI / 2);  // emitter
+    for (const side of [-1, 1]) {
+      add(new THREE.BoxGeometry(T * 0.1, T * 0.28, L * 0.3), glowMat, side * T * 0.3, T * 0.1, L * 0.05);        // cells
+    }
+    add(new THREE.BoxGeometry(T * 0.36, T * 0.7, stockLen * 0.9), aMat, 0, -T * 0.02, -L * 0.4);
+    magH = 0;
+  } else if (fam === "crossbow") {
+    add(new THREE.BoxGeometry(T * 0.3, T * 0.24, L * 0.9), bMat, 0, T * 0.05, L * 0.05);                  // stock rail
+    // the limbs, swept forward
+    for (const side of [-1, 1]) {
+      add(new THREE.BoxGeometry(L * 0.42, 0.06, 0.1), aMat, side * L * 0.2, T * 0.2, L * 0.34, 0, 0, side * 0.35);
+    }
+    add(new THREE.BoxGeometry(L * 0.78, 0.03, 0.03), METAL_DARK_MAT, 0, T * 0.2, L * 0.2);               // string
+    add(new THREE.CylinderGeometry(0.035, 0.035, L * 0.5, 5), aMat, 0, T * 0.28, L * 0.18, Math.PI / 2);  // loaded bolt
+    add(new THREE.BoxGeometry(T * 0.3, T * 0.7, stockLen), aMat, 0, -T * 0.05, -L * 0.42);
+    magH = 0;
   } else { // "rifle" family — also covers burst/carbine
     add(new THREE.CylinderGeometry(T * 0.2, T * 0.2, L * 0.34, 6), METAL_DARK_MAT, 0, 0, L * 0.42, Math.PI / 2);
     add(new THREE.BoxGeometry(T * 0.1, T * 0.5, T * 0.3), aMat, 0, T * 0.55, L * 0.34); // front sight post
@@ -1039,6 +1309,18 @@ function animateSoldier(b, dt) {
 
   if (b.isDummy || !b.alive || !rig) return;
 
+  // riding a vehicle: updateVehicles() owns this bot's position/rotation, and
+  // a seated soldier shouldn't be running on the spot (R-VEH-1)
+  if (b.vehicle) {
+    const ease = Math.min(1, dt * 8);
+    rig.leftLeg.rotation.x += (-0.9 - rig.leftLeg.rotation.x) * ease;   // knees up, seated
+    rig.rightLeg.rotation.x += (-0.9 - rig.rightLeg.rotation.x) * ease;
+    rig.leftArm.rotation.x += (-0.5 - rig.leftArm.rotation.x) * ease;
+    rig.rightArm.rotation.x += (-0.5 - rig.rightArm.rotation.x) * ease;
+    mesh.rotation.x += (0 - mesh.rotation.x) * ease;
+    return;
+  }
+
   // ---- downed: slumped forward instead of the old cartoonish squash ----
   if (b.downed) {
     mesh.rotation.x += (1.05 - mesh.rotation.x) * Math.min(1, dt * 6);
@@ -1137,6 +1419,8 @@ function spawnBot(team, forceRole) {
     strafePhase: Math.random() * Math.PI * 2,
     wantSprint: false, crouching: false, jumpT: 0, slideT: 0,
     weaponSwitchCd: 4 + Math.random() * 8,
+    // vehicles (R-VEH-1)
+    vehicle: null, vehSeat: 0, driveTo: null, vehicleCd: Math.random() * 3,
   };
   mesh.position.copy(bot.pos);
   bots.push(bot);
@@ -1224,6 +1508,8 @@ const player = {
   stamina: 100, sliding: false, slideT: 0,
   alive: true, respawnAt: 0,
   zip: null, zipT: 0,                 // zipline ride state (R-MAP-4)
+  vehicle: null,                      // vehicle you're riding/driving (R-VEH-1)
+  team: "blue",                       // the player always fights for blue
   downed: false, bleed: 0, reviveProgress: 0, reviverName: "",
   role: "rusher", roleData: ROLES.rusher, speedMul: 1,
   reviveTargetProgress: 0,
@@ -1236,6 +1522,8 @@ const player = {
   utilUses: 0, utilCd: 0,            // R-ECO-6 (~30s between uses)
   burstLeft: 0, burstCd: 0,
   frozenT: 0,
+  fireModes: {},        // per-gun alt fire selection (R-GUN-1)
+  spinT: 0,             // minigun wind-up
 };
 
 /** Key of the item in the active slot. */
@@ -1251,6 +1539,7 @@ function isUtilSlot() { return player.slot === 3; }
 function applyRole(roleKey) {
   const r = ROLES[roleKey] || ROLES.rusher;
   player.role = roleKey;
+  profile.role = roleKey;      // weapon eligibility follows the active role (R-GUN-5)
   player.roleData = r;
   player.maxHp = r.hp;
   player.hp = Math.min(player.hp || r.hp, r.hp);
@@ -1258,7 +1547,29 @@ function applyRole(roleKey) {
 }
 
 /** Fill mags/reserves for the current loadout — called on spawn (R-LDO-3, R-RSP-2). */
+/**
+ * Roles can only carry weapons that suit them (R-GUN-5). If the saved loadout
+ * has something the current role can't use (you bought an LMG as a Heavy then
+ * switched to Sniper), swap that slot to the best weapon the role CAN carry
+ * rather than leaving them empty-handed.
+ */
+function enforceRoleLoadout() {
+  const role = profile.role || selRole || "rusher";
+  let changed = false;
+  for (let slot = 0; slot < 3; slot++) {
+    const k = profile.loadout[slot];
+    if (!k || !GUNS[k] || roleCanUse(k, role)) continue;
+    // prefer something already owned; fall back to the free starter for the slot
+    const owned = profile.ownedGuns.filter(x => GUNS[x].slot === slot && roleCanUse(x, role));
+    const fallback = owned[0] || Object.keys(GUNS).find(x => GUNS[x].slot === slot && GUNS[x].free);
+    if (fallback) { profile.loadout[slot] = fallback; changed = true; }
+  }
+  if (changed) { P.save(); toast("Loadout adjusted to fit your role"); }
+  return changed;
+}
+
 function applyLoadout() {
+  enforceRoleLoadout();
   player.loadout = profile.loadout.slice();
   player.ammo = {}; player.reserve = {};
   for (const k of player.loadout) {
@@ -1428,6 +1739,7 @@ addEventListener("keydown", (e) => {
   // typing in chat swallows all gameplay keys
   if (chatOpen) return;
   if (e.code === "Enter" || e.code === "NumpadEnter") { e.preventDefault(); openChat(); return; }
+  if (e.code === "KeyV" && running) { toggleFireMode(); return; }
   if (e.code === "Escape" && running && state.mode === "range") { leaveRange(); return; }
 
   keys[e.code] = true;
@@ -1496,6 +1808,24 @@ function collide(pos) {
 const raycaster = new THREE.Raycaster();
 let recoil = 0;
 
+/** V cycles a gun between its default and its unlocked alt fire mode (R-GUN-1). */
+function toggleFireMode() {
+  const wk = curKey();
+  const g = GUNS[wk];
+  if (!g || g.melee || isUtilSlot()) return;
+  if (!g.alt) { toast(`${g.name} has no second fire mode`); return; }
+  const base = gunStats(wk, profile);
+  if (!base.altUnlocked) { toast(`${g.name}: reach Lv3 to unlock ${FIRE_MODES[g.alt].name}`); return; }
+
+  player.fireModes = player.fireModes || {};
+  const on = player.fireModes[wk] === g.alt;
+  player.fireModes[wk] = on ? null : g.alt;
+  player.burstLeft = 0;
+  const label = on ? (g.burst ? `Burst-${g.burst}` : g.auto ? "Auto" : "Semi")
+                   : FIRE_MODES[g.alt].name;
+  toast(`${g.name} — ${label}`);
+}
+
 function startReload() {
   const wk = curKey();
   const g = GUNS[wk];
@@ -1517,7 +1847,7 @@ function finishReload() {
 }
 
 /** One hitscan pellet. Returns the bot hit (or null). */
-function castShot(spread, dmg) {
+function castShot(spread, dmg, gun) {
   const dir = new THREE.Vector3();
   camera.getWorldDirection(dir);
   dir.x += (Math.random() * 2 - 1) * spread;
@@ -1526,37 +1856,53 @@ function castShot(spread, dmg) {
   dir.normalize();
   raycaster.set(camera.getWorldPosition(new THREE.Vector3()), dir);
 
-  let hitBot = null, hitDist = Infinity;
+  // Bodies are split into a head box and a torso/legs box so aim is rewarded
+  // (R-GUN-3). The head box sits at the top of the 3.2-tall soldier volume.
+  let hitBot = null, hitDist = Infinity, headshot = false;
   for (const b of bots) {
     if (!b.alive) continue;
+    const head = new THREE.Box3().setFromCenterAndSize(
+      new THREE.Vector3(b.pos.x, b.pos.y + 2.62, b.pos.z), new THREE.Vector3(0.62, 0.62, 0.62)
+    );
+    const hp = raycaster.ray.intersectBox(head, new THREE.Vector3());
+    if (hp) {
+      const d = hp.distanceTo(raycaster.ray.origin);
+      if (d < hitDist) { hitDist = d; hitBot = b; headshot = true; }
+      continue;                       // a head hit always beats the body hit
+    }
     const box = new THREE.Box3().setFromCenterAndSize(
-      new THREE.Vector3(b.pos.x, 1.6, b.pos.z), new THREE.Vector3(1.2, 3.2, 1.2)
+      new THREE.Vector3(b.pos.x, b.pos.y + 1.45, b.pos.z), new THREE.Vector3(1.2, 2.6, 1.2)
     );
     const pt = raycaster.ray.intersectBox(box, new THREE.Vector3());
     if (pt) {
       const d = pt.distanceTo(raycaster.ray.origin);
-      if (d < hitDist) { hitDist = d; hitBot = b; }
+      if (d < hitDist) { hitDist = d; hitBot = b; headshot = false; }
     }
   }
   const worldHits = raycaster.intersectObjects(worldMeshes(), false);
   const worldDist = worldHits.length ? worldHits[0].distance : Infinity;
 
   if (hitBot && hitDist < worldDist) {
-    damageBot(hitBot, dmg);
+    // range falloff, then the headshot bonus (R-GUN-2/3)
+    let out = dmg * falloffMul(hitDist, gun);
+    if (headshot) out *= HEADSHOT.mult;
+    damageBot(hitBot, out, headshot);
     return hitBot;
   }
-  // hit the world instead — chip away at destructible cover (R-MAP-3)
+  // hit the world instead — chip away at destructible cover (R-MAP-3),
+  // or punch holes in a vehicle until it brews up (R-VEH-1)
   if (worldHits.length) {
     const col = worldHits[0].object.userData.collider;
-    if (col && col.destructible) damageProp(col, dmg);
+    if (col && col.vehicle) damageVehicle(col.vehicle, dmg, true);
+    else if (col && col.destructible) damageProp(col, dmg);
   }
   return null;
 }
 
 /** Damage a bot from the player, applying friendly-fire rules (R-CMB-4). */
-function damageBot(b, dmg) {
+function damageBot(b, dmg, headshot) {
   b.hp -= dmg;
-  hitMarker();
+  hitMarker(headshot);
   if (b.team === "blue") {
     P.addCoins(-COINS.teamkillPenalty);
     toast(`Friendly fire! -${COINS.teamkillPenalty} coins`);
@@ -1585,6 +1931,8 @@ function meleeSwing(s) {
 function tryFire(dt) {
   player.fireCd -= dt;
   player.burstCd -= dt;
+  // barrels spin back down whenever you're not holding the trigger
+  if (!mouseDown && player.spinT > 0) player.spinT = Math.max(0, player.spinT - dt * 1.6);
   if (!player.alive || player.reloading > 0) return;
 
   // ----- utility slot (throwables) -----
@@ -1631,6 +1979,13 @@ function tryFire(dt) {
     return;
   }
 
+  // ----- minigun spin-up: the barrels have to wind up before the first round
+  // leaves the gun (R-GUN-1) -----
+  if (g.spinup) {
+    player.spinT = Math.min(g.spinup, (player.spinT || 0) + dt);
+    if (player.spinT < g.spinup) { Sound.playSpinup(); return; }
+  }
+
   player.fireCd = 60 / g.rpm;
   player.ammo[wk]--;
   // practice modes (Shooting Range) never run dry — reserve tops itself off (R-MOD-5)
@@ -1647,12 +2002,102 @@ function tryFire(dt) {
 
   muzzleFlash();
   fireMuzzleFX(viewGun);
-  const silenced = ((profile.attachments && profile.attachments[wk]) || []).includes("silencer");
+  const silenced = g.silentShot ||
+    ((profile.attachments && profile.attachments[wk]) || []).includes("silencer");
   Sound.playGunshot(GUN_SFX[wk] || "crack", { silenced });
   recoil += s.kick * (player.ads ? 0.5 : 1) * 0.01;
 
-  const pellets = g.pellets || 1;
-  for (let i = 0; i < pellets; i++) castShot(spread, s.dmg);
+  // ----- how this weapon actually delivers damage (R-GUN-1) -----
+  switch (g.kind) {
+    case "rocket":
+      fireProjectileWeapon(g, s);
+      break;
+    case "beam":
+      fireBeamWeapon(g, s, spread);
+      break;
+    case "flame":
+      fireFlameWeapon(g, s);
+      break;
+    default: {
+      const pellets = g.pellets || 1;
+      for (let i = 0; i < pellets; i++) castShot(spread, s.dmg, g);
+    }
+  }
+}
+
+// ============================================================
+//  NEW WEAPON KINDS  (R-GUN-1)
+// ============================================================
+
+/** Rocket / grenade launcher: a travelling shell that detonates on impact. */
+function fireProjectileWeapon(g, s) {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const from = camera.getWorldPosition(new THREE.Vector3()).addScaledVector(dir, 1.2);
+
+  const mesh = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.12, 0.16, 0.7, 8),
+    new THREE.MeshStandardMaterial({ color: 0x6a6f5a, emissive: 0xff7a2a, emissiveIntensity: 0.5 })
+  );
+  mesh.position.copy(from);
+  mesh.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0), dir.clone().normalize());
+  scene.add(mesh);
+
+  projectiles.push({
+    mesh,
+    pos: from.clone(),
+    vel: dir.clone().multiplyScalar(g.speed),
+    gravity: g.arc ? 22 : 0,          // the GL lobs, the rocket flies flat
+    life: 6,
+    blast: g.blast,
+    isShell: true,
+  });
+}
+
+/** Energy weapon: instant hit plus a visible beam that fades out. */
+function fireBeamWeapon(g, s, spread) {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const origin = camera.getWorldPosition(new THREE.Vector3());
+  const hit = castShot(spread, s.dmg, g);
+
+  // draw the bolt from muzzle to wherever the ray ended up
+  const end = origin.clone().addScaledVector(dir, hit ? origin.distanceTo(hit.pos) : 120);
+  const beam = new THREE.Mesh(
+    new THREE.CylinderGeometry(0.045, 0.045, origin.distanceTo(end), 6),
+    new THREE.MeshBasicMaterial({ color: 0x66e0ff, transparent: true, opacity: 0.85 })
+  );
+  beam.position.copy(origin).lerp(end, 0.5);
+  beam.quaternion.setFromUnitVectors(new THREE.Vector3(0, 1, 0),
+    new THREE.Vector3().subVectors(end, origin).normalize());
+  scene.add(beam);
+  effects.push({ kind: "puff", mesh: beam, life: 0.09, maxLife: 0.09, at: end, radius: 0 });
+}
+
+/** Flamethrower: a short cone of fire that scorches everything in front. */
+function fireFlameWeapon(g, s) {
+  const dir = new THREE.Vector3();
+  camera.getWorldDirection(dir);
+  const origin = camera.getWorldPosition(new THREE.Vector3());
+
+  for (const b of bots) {
+    if (!b.alive || b.downed) continue;
+    const to = new THREE.Vector3(b.pos.x, b.pos.y + 1.5, b.pos.z).sub(origin);
+    const d = to.length();
+    if (d > g.range) continue;
+    if (to.normalize().dot(dir) < 1 - g.cone) continue;      // outside the cone
+    if (!hasLOS(player.pos, b.pos)) continue;
+    damageBot(b, s.dmg, false);
+  }
+
+  // a puff of flame at the muzzle so it reads visually
+  const puff = new THREE.Mesh(
+    new THREE.SphereGeometry(0.7, 8, 6),
+    new THREE.MeshBasicMaterial({ color: 0xff7a2a, transparent: true, opacity: 0.5 })
+  );
+  puff.position.copy(origin).addScaledVector(dir, 2.4 + Math.random() * 2);
+  scene.add(puff);
+  effects.push({ kind: "puff", mesh: puff, life: 0.22, maxLife: 0.22, at: puff.position.clone(), radius: 0 });
 }
 
 /** Kill a bot. `byPlayer` drives coins/XP (R-ECO-1, R-ECO-5). */
@@ -1795,8 +2240,6 @@ function breakProp(col) {
   if (i >= 0) colliders.splice(i, 1);
   i = solids.indexOf(col.mesh);
   if (i >= 0) solids.splice(i, 1);
-  i = vehicles.indexOf(col);
-  if (i >= 0) vehicles.splice(i, 1);
 
   // cover points around it are gone too, so the AI stops hiding at thin air
   const cx = (col.min.x + col.max.x) / 2, cz = (col.min.z + col.max.z) / 2;
@@ -1978,6 +2421,39 @@ function throwUtility() {
 function updateProjectiles(dt) {
   for (let i = projectiles.length - 1; i >= 0; i--) {
     const p = projectiles[i];
+
+    // ----- launcher shells: fly straight (or lob), detonate on contact (R-GUN-1) -----
+    if (p.isShell) {
+      p.vel.y -= (p.gravity || 0) * dt;
+      p.pos.addScaledVector(p.vel, dt);
+      p.mesh.position.copy(p.pos);
+      p.life -= dt;
+
+      let boom = p.pos.y <= 0.2;                       // hit the dirt
+      if (!boom) {
+        for (const c of colliders) {                   // hit cover / a vehicle
+          if (p.pos.x > c.min.x && p.pos.x < c.max.x &&
+              p.pos.z > c.min.z && p.pos.z < c.max.z && p.pos.y < c.top) { boom = true; break; }
+        }
+      }
+      if (!boom) {
+        for (const b of bots) {                        // hit a body
+          if (!b.alive || b.downed) continue;
+          if (Math.abs(b.pos.x - p.pos.x) < 0.9 && Math.abs(b.pos.z - p.pos.z) < 0.9 &&
+              p.pos.y < b.pos.y + 3) { boom = true; break; }
+        }
+      }
+      if (boom || p.life <= 0) {
+        const at = p.pos.clone(); at.y = Math.max(0.3, at.y);
+        explode(at, p.blast.radius, p.blast.dmg, 0xffa040, null);
+        Sound.playExplosion({ pos: at, listenerPos: player.pos, listenerYaw: player.yaw });
+        scene.remove(p.mesh);
+        p.mesh.geometry.dispose(); p.mesh.material.dispose();
+        projectiles.splice(i, 1);
+      }
+      continue;
+    }
+
     p.vel.y -= 22 * dt;
     p.pos.addScaledVector(p.vel, dt);
     // bounce off ground
@@ -2160,10 +2636,12 @@ function flashBlind(strength) {
 let flashT = 0;
 function muzzleFlash() { flashT = 0.05; muzzle.intensity = 3; }
 const hitmarkerEl = document.getElementById("hitmarker");
-function hitMarker() {
+function hitMarker(headshot) {
   hitmarkerEl.classList.remove("show");
+  hitmarkerEl.classList.toggle("head", !!headshot);   // red X + ping on a headshot
   void hitmarkerEl.offsetWidth;
   hitmarkerEl.classList.add("show");
+  if (headshot) Sound.playHeadshot();
 }
 const popupsEl = document.getElementById("popups");
 function popup(txt, color, dy) {
@@ -2211,6 +2689,7 @@ function damagePlayer(amount, fromPos) {
  * (R-AI-3). Otherwise it's a straight death.
  */
 function playerDown() {
+  if (player.vehicle) exitVehicle(player);      // you can't hold the wheel while bleeding out
   const helpAvailable = bots.some(b => b.team === "blue" && b.alive && !b.downed);
   if (!helpAvailable) { playerDie(); return; }
   player.downed = true;
@@ -2236,6 +2715,7 @@ function revivePlayerTick(b, dt) {
 }
 
 function playerDie() {
+  if (player.vehicle) exitVehicle(player);
   player.alive = false;
   player.downed = false;
   player.reviveProgress = 0;
@@ -2256,6 +2736,7 @@ function playerDie() {
   }
 }
 function respawnPlayer() {
+  if (player.vehicle) exitVehicle(player);
   if (scopeActive) unscope();
   player.alive = true;
   player.hp = player.maxHp;
@@ -2312,6 +2793,7 @@ function updateBot(b, dt) {
 
   // ----- downed teammates bleed out or wait for a revive (R-AI-3) -----
   if (b.downed) {
+    if (b.vehicle) exitVehicle(b);
     b.bleed -= dt;
     if (b.bleed <= 0) finishBotDeath(b);
     b.mesh.position.copy(b.pos);
@@ -2319,6 +2801,7 @@ function updateBot(b, dt) {
   }
 
   if (!b.alive) {
+    if (b.vehicle) exitVehicle(b);
     if (time >= b.respawnAt) {
       const base = b.team === "red" ? RED_SPAWN : BLUE_SPAWN;
       b.pos.set(base.x + (Math.random() * 12 - 6), 0, base.z + (Math.random() * 8 - 4));
@@ -2345,6 +2828,40 @@ function updateBot(b, dt) {
 
   const D = DIFFICULTY[difficulty] || DIFFICULTY.recruit;
   const role = b.roleData;
+
+  // ----- bots drive too (R-VEH-1). A bot grabs a vehicle when its target is
+  // far away, drives at it, then bails out and fights on foot once it's close.
+  // Passengers only ever share with their OWN side (canBoard enforces it), so
+  // a red bot will never hop into a blue-driven truck. -----
+  if (b.vehicle) {
+    const v = b.vehicle;
+    if (!v.alive) { b.vehicle = null; }
+    else {
+      const foe = nearestEnemyOf(b);
+      const away = foe ? b.pos.distanceTo(foe.pos) : Infinity;
+      if (v.driver === b) b.driveTo = foe ? foe.pos : (orderDestination(b) || RED_SPAWN);
+      // close enough to fight, or nothing left to drive at → dismount
+      if (away < 22 || !foe) { exitVehicle(b); }
+      else {
+        faceAlong(b, b.driveTo || b.pos);
+        return;                        // riding: the vehicle sim moves this bot
+      }
+    }
+  } else {
+    b.vehicleCd = (b.vehicleCd || 0) - dt;
+    if (b.vehicleCd <= 0) {
+      b.vehicleCd = 1.5 + Math.random() * 2;
+      const foe = nearestEnemyOf(b);
+      const away = foe ? b.pos.distanceTo(foe.pos) : 0;
+      if (foe && away > 40) {
+        const v = nearbyVehicle(b, 30);
+        if (v && Math.random() < 0.5 + D.mobility * 0.35) {
+          enterVehicle(v, b);
+          if (b.vehicle) { b.driveTo = foe.pos; return; }
+        }
+      }
+    }
+  }
 
   // ----- live weapon swaps: bots occasionally switch to another gun from their
   // role's pool mid-match, not just once at spawn (R-AI-5). Runs even without
@@ -2529,6 +3046,12 @@ function updateBot(b, dt) {
 //  ZIPLINES  (R-MAP-4 — the one thing you CAN ride)
 // ============================================================
 const ziplinePromptEl = document.getElementById("ziplinePrompt");
+const vehiclePromptEl = document.getElementById("vehiclePrompt");
+const vehiclePromptText = document.getElementById("vehiclePromptText");
+const vehicleHudEl = document.getElementById("vehicleHud");
+const vehicleHudName = document.getElementById("vehicleHudName");
+const vehicleHudFill = document.getElementById("vehicleHudFill");
+const vehicleHudSpeed = document.getElementById("vehicleHudSpeed");
 
 /** Nearest zipline anchor you could grab right now. */
 function nearbyZipline() {
@@ -2562,24 +3085,351 @@ function updateZipline(dt) {
   // must run even when there are no ziplines here.
   const z = ziplines.length ? nearbyZipline() : null;
   ziplinePromptEl.classList.toggle("hidden", !z);
-  if (z && keys["KeyE"]) attachZipline(z);
-  else vehicleNudge();
+  if (z && keys["KeyE"] && !player.vehicle) { attachZipline(z); player._eLatch = true; }
+}
+
+// ============================================================
+//  DRIVING  (R-VEH-1)
+//  Anyone can drive. A driver may carry their OWN side only: the player and
+//  blue bots share a vehicle, red bots share theirs, and you can never board
+//  a vehicle an enemy is driving (or vice versa).
+// ============================================================
+
+/** Team of whoever is driving (an empty vehicle is open to everyone). */
+function vehicleTeam(v) {
+  return v.driver ? (v.driver === player ? "blue" : v.driver.team) : null;
+}
+
+/** May `who` (player object or bot) get into this vehicle right now? */
+function canBoard(v, who) {
+  if (!v.alive || v.occupants.length >= v.def.seats) return false;
+  const t = vehicleTeam(v);
+  if (!t) return true;                                  // empty — first come, first served
+  const mine = who === player ? "blue" : who.team;
+  return t === mine;                                    // never ride with the enemy
+}
+
+/** Nearest vehicle this actor could climb into. */
+function nearbyVehicle(who, range) {
+  const from = who === player ? player.pos : who.pos;
+  let best = null, bestD = range || 6.5;
+  for (const v of vehicles) {
+    if (!v.alive || v.occupants.includes(who)) continue;
+    const d = Math.hypot(from.x - v.pos.x, from.z - v.pos.z);
+    if (d < bestD && canBoard(v, who)) { bestD = d; best = v; }
+  }
+  return best;
+}
+
+/** Local seat offset (nose is +Z). Seat 0 is the driver. */
+function seatLocal(def, i) {
+  if (def.style === "bike") return new THREE.Vector3(0, 0, i === 0 ? def.len * 0.08 : -def.len * 0.26);
+  const row = Math.floor(i / 2), side = (i % 2) === 0 ? -1 : 1;
+  return new THREE.Vector3(side * def.wid * 0.26, 0, def.len * 0.22 - row * 1.6);
+}
+
+/** World position of seat `i`, accounting for the vehicle's yaw. */
+function seatWorld(v, i, out) {
+  const l = seatLocal(v.def, i);
+  const c = Math.cos(v.yaw), sn = Math.sin(v.yaw);
+  const o = out || new THREE.Vector3();
+  // rotate local (x,z) by yaw — same convention the model group uses
+  o.set(
+    v.pos.x + l.x * c + l.z * sn,
+    v.pos.y + v.def.tall * 0.35,
+    v.pos.z - l.x * sn + l.z * c
+  );
+  return o;
+}
+
+function enterVehicle(v, who) {
+  if (!canBoard(v, who)) return false;
+  const seat = v.occupants.length;
+  v.occupants.push(who);
+  if (!v.driver) v.driver = who;
+  if (who === player) {
+    player.vehicle = v;
+    player.zip = null;
+    player.sliding = false;
+    player.vel.set(0, 0, 0);
+    toast(v.driver === player
+      ? `Driving the ${v.def.name} — WASD to drive, E to get out`
+      : `Riding in the ${v.def.name} — E to get out`);
+  } else {
+    who.vehicle = v;
+    who.vehSeat = seat;
+  }
+  return true;
+}
+
+function exitVehicle(who) {
+  const v = who === player ? player.vehicle : who.vehicle;
+  if (!v) return;
+  const i = v.occupants.indexOf(who);
+  if (i >= 0) v.occupants.splice(i, 1);
+
+  // step out beside the vehicle rather than inside its own collision box
+  const side = new THREE.Vector3(Math.cos(v.yaw), 0, -Math.sin(v.yaw))
+    .multiplyScalar(v.def.wid * 0.5 + 2.2);
+  const out = new THREE.Vector3(v.pos.x + side.x, 0, v.pos.z + side.z);
+
+  if (who === player) {
+    player.vehicle = null;
+    player.pos.set(out.x, 0, out.z);
+    player.vel.set(0, 0, 0);
+    player.onGround = true;
+    collide(player.pos);
+  } else {
+    who.vehicle = null;
+    who.vehSeat = 0;
+    who.pos.set(out.x, 0, out.z);
+    clampBot(who);
+  }
+
+  // driver left — hand the wheel to whoever is still aboard
+  if (v.driver === who) v.driver = v.occupants[0] || null;
+}
+
+/** Everyone still inside bails out (used when a wreck blows up). */
+function ejectAll(v) {
+  for (const who of v.occupants.slice()) exitVehicle(who);
+  v.occupants.length = 0;
+  v.driver = null;
+}
+
+/** Bullets and blasts chew through vehicles; at 0 hp they explode (R-VEH-1). */
+function damageVehicle(v, dmg, byPlayer) {
+  if (!v || !v.alive) return;
+  v.hp -= dmg;
+  if (byPlayer) hitMarker();
+  if (v.hp <= 0) destroyVehicle(v, byPlayer);
+}
+
+function destroyVehicle(v, byPlayer) {
+  if (!v.alive) return;
+  v.alive = false;
+
+  const at = new THREE.Vector3(v.pos.x, 1.2, v.pos.z);
+  const riders = v.occupants.slice();
+
+  // everyone inside is caught in the blast — get them out first so the
+  // explosion damages them as normal people standing at the wreck
+  ejectAll(v);
+  for (const who of riders) {
+    if (who === player) damagePlayer(v.def.boom.dmg * 1.2, at);
+    else if (who.alive && !who.downed) {
+      if (byPlayer) damageBot(who, v.def.boom.dmg * 1.2);
+      else damageBotFromBot(who, v.def.boom.dmg * 1.2);
+    }
+  }
+
+  explode(at, v.def.boom.radius, v.def.boom.dmg, 0xffa040, null);
+  Sound.playExplosion({ pos: at, listenerPos: player.pos, listenerYaw: player.yaw });
+  spawnVehicleDebris(v);
+
+  // stop blocking movement/bullets, hide the shell
+  let i = colliders.indexOf(v.col);
+  if (i >= 0) colliders.splice(i, 1);
+  i = solids.indexOf(v.col.mesh);
+  if (i >= 0) solids.splice(i, 1);
+  wmCache = null;
+  v.group.visible = false;
+  v.respawnAt = time + VEHICLE_RESPAWN;
+}
+
+function spawnVehicleDebris(v) {
+  for (let i = 0; i < 10; i++) {
+    const sz = 0.4 + Math.random() * 0.9;
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(sz, sz, sz),
+      new THREE.MeshStandardMaterial({ color: v.def.trim, roughness: 0.9 })
+    );
+    m.position.set(v.pos.x + (Math.random() * 2 - 1) * 2, 1 + Math.random() * 2,
+                   v.pos.z + (Math.random() * 2 - 1) * 2);
+    mapGroup.add(m);
+    debris.push({
+      mesh: m, life: 2.8,
+      vel: new THREE.Vector3((Math.random() * 2 - 1) * 9, 5 + Math.random() * 8, (Math.random() * 2 - 1) * 9),
+      spin: new THREE.Vector3(Math.random() * 7, Math.random() * 7, Math.random() * 7),
+    });
+  }
+}
+
+/** Put a destroyed vehicle back on the map somewhere else after a cooldown. */
+function respawnVehicle(v) {
+  let x = v.pos.x, z = v.pos.z;
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const tx = (Math.random() * 2 - 1) * (MAP - 20);
+    const tz = (Math.random() * 2 - 1) * (MAP - 18);
+    if (vehicleSpotClear(v.def, tx, tz)) { x = tx; z = tz; break; }
+  }
+  v.pos.set(x, 0, z);
+  v.yaw = Math.random() * Math.PI * 2;
+  v.speed = 0;
+  v.hp = v.maxHp;
+  v.alive = true;
+  v.group.visible = true;
+  v.group.position.set(x, 0, z);
+  v.group.rotation.y = v.yaw;
+  syncVehicleCollider(v);
+  colliders.push(v.col);
+  solids.push(v.col.mesh);
+  wmCache = null;
+}
+
+/** Would a vehicle body at (x,z) overlap solid cover? (ignores other vehicles) */
+function vehicleBlockedAt(v, x, z) {
+  const c = Math.abs(Math.cos(v.yaw)), sn = Math.abs(Math.sin(v.yaw));
+  const hw = v.def.wid / 2, hl = v.def.len / 2;
+  const ex = hw * c + hl * sn, ez = hw * sn + hl * c;
+  for (const col of colliders) {
+    if (col === v.col) continue;
+    if (col.kind === "vehicle") continue;              // vehicles shove past each other
+    if (col.top < 0.8) continue;                       // low kerbs don't stop a truck
+    if (x + ex > col.min.x && x - ex < col.max.x &&
+        z + ez > col.min.z && z - ez < col.max.z) return col;
+  }
+  return null;
 }
 
 /**
- * Vehicles are scenery: they block you, but pressing E at one just tells you
- * so — only ziplines are rideable (R-MAP-4).
+ * One frame of vehicle simulation: driver input → throttle/steering, then
+ * movement, collisions, ramming, wheel spin and occupant placement.
  */
-let vehicleHintAt = 0;
-function vehicleNudge() {
-  if (!keys["KeyE"] || player.zip || time < vehicleHintAt) return;
+function updateVehicles(dt) {
   for (const v of vehicles) {
-    const cx = (v.min.x + v.max.x) / 2, cz = (v.min.z + v.max.z) / 2;
-    if (Math.hypot(player.pos.x - cx, player.pos.z - cz) < 6) {
-      toast("You can't drive vehicles — only ziplines can be ridden");
-      vehicleHintAt = time + 4;
-      return;
+    if (!v.alive) {
+      if (time >= v.respawnAt) respawnVehicle(v);
+      continue;
     }
+
+    // ---- driver intent ----
+    let throttle = 0, steer = 0;
+    const d = v.driver;
+    if (d === player && player.alive && !player.downed) {
+      if (keys["KeyW"]) throttle += 1;
+      if (keys["KeyS"]) throttle -= 1;
+      if (keys["KeyA"]) steer += 1;
+      if (keys["KeyD"]) steer -= 1;
+      if (keys["ShiftLeft"]) throttle *= 1.15;          // a little extra push
+    } else if (d && d !== player && d.alive && !d.downed && d.driveTo) {
+      // bot driver: steer toward its destination, full throttle unless it needs
+      // to swing the nose around first
+      const dx = d.driveTo.x - v.pos.x, dz = d.driveTo.z - v.pos.z;
+      const want = Math.atan2(dx, dz);
+      let diff = want - v.yaw;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      steer = Math.max(-1, Math.min(1, diff * 1.7));
+      throttle = Math.abs(diff) > 2.2 ? -0.6 : 1;       // reverse out of a bad angle
+    }
+
+    // ---- longitudinal motion ----
+    const def = v.def;
+    if (throttle > 0) v.speed += def.accel * throttle * dt;
+    else if (throttle < 0) v.speed -= def.brake * 0.55 * dt;
+    else v.speed -= Math.sign(v.speed) * Math.min(Math.abs(v.speed), def.brake * 0.5 * dt);
+    v.speed = Math.max(-def.maxSpeed * 0.45, Math.min(def.maxSpeed, v.speed));
+
+    // steering only bites when actually rolling, and scales with speed
+    if (Math.abs(v.speed) > 0.4) {
+      const grip = Math.min(1, Math.abs(v.speed) / (def.maxSpeed * 0.5));
+      v.yaw += steer * def.turn * grip * dt * Math.sign(v.speed);
+    }
+
+    // ---- integrate + collide ----
+    const nx = v.pos.x + Math.sin(v.yaw) * v.speed * dt;
+    const nz = v.pos.z + Math.cos(v.yaw) * v.speed * dt;
+    const hit = vehicleBlockedAt(v, nx, nz);
+    if (hit) {
+      // crunch into cover: shed speed, and shove destructible props aside
+      const impact = Math.abs(v.speed);
+      if (hit.destructible && impact > 6) damageProp(hit, impact * 9);
+      if (impact > 14) damageVehicle(v, (impact - 14) * 2.5, false);
+      if (!v.alive) continue;
+      // slide along whichever axis is still free instead of stopping dead —
+      // otherwise a vehicle nosed into a wall can never work itself loose
+      if (!vehicleBlockedAt(v, nx, v.pos.z)) { v.pos.x = nx; v.speed *= 0.75; }
+      else if (!vehicleBlockedAt(v, v.pos.x, nz)) { v.pos.z = nz; v.speed *= 0.75; }
+      else v.speed *= -0.15;                       // truly boxed in: bounce off
+    } else {
+      v.pos.x = nx; v.pos.z = nz;
+    }
+    const lim = MAP - 4;
+    v.pos.x = Math.max(-lim, Math.min(lim, v.pos.x));
+    v.pos.z = Math.max(-lim, Math.min(lim, v.pos.z));
+
+    v.group.position.set(v.pos.x, 0, v.pos.z);
+    v.group.rotation.y = v.yaw;
+    syncVehicleCollider(v);
+
+    // ---- wheels ----
+    v.wheelSpin += v.speed * dt * 1.6;
+    for (const w of v.wheels) w.rotation.x = v.wheelSpin;
+
+    // ---- ramming: run people over (R-VEH-1) ----
+    if (Math.abs(v.speed) > 6) {
+      const frac = Math.min(1, Math.abs(v.speed) / def.maxSpeed);
+      const dmg = def.ram * frac;
+      const ex = (v.col.max.x - v.col.min.x) / 2 + 0.6;
+      const ez = (v.col.max.z - v.col.min.z) / 2 + 0.6;
+      for (const b of bots) {
+        if (!b.alive || b.downed || b.vehicle) continue;
+        if (Math.abs(b.pos.x - v.pos.x) > ex || Math.abs(b.pos.z - v.pos.z) > ez) continue;
+        if (b._ramCd && time < b._ramCd) continue;
+        b._ramCd = time + 0.5;
+        const byPlayer = v.driver === player;
+        if (byPlayer) damageBot(b, dmg);
+        else if (b.team !== vehicleTeam(v)) damageBotFromBot(b, dmg);
+        // knock them clear so they don't sit inside the chassis
+        b.pos.x += Math.sin(v.yaw) * 1.6;
+        b.pos.z += Math.cos(v.yaw) * 1.6;
+      }
+      // the player can be run over too — but not by their own ride
+      if (player.alive && !player.downed && !player.vehicle &&
+          Math.abs(player.pos.x - v.pos.x) <= ex && Math.abs(player.pos.z - v.pos.z) <= ez &&
+          (!player._ramCd || time >= player._ramCd)) {
+        player._ramCd = time + 0.5;
+        damagePlayer(dmg, v.pos);
+      }
+    }
+
+    // ---- seat occupants to the vehicle ----
+    for (let i = 0; i < v.occupants.length; i++) {
+      const who = v.occupants[i];
+      const p = seatWorld(v, i);
+      if (who === player) {
+        player.pos.set(p.x, 0, p.z);
+        player.vel.set(0, 0, 0);
+        player.onGround = true;
+      } else {
+        who.pos.set(p.x, 0, p.z);
+        who.mesh.position.set(p.x, v.def.tall * 0.35, p.z);
+        who.mesh.rotation.y = v.yaw;
+      }
+    }
+  }
+}
+
+/** E near a vehicle gets you in; E while aboard gets you out. */
+function updateVehicleInput() {
+  const pressed = !!keys["KeyE"];
+  const tapped = pressed && !player._eLatch;
+  player._eLatch = pressed;
+
+  if (player.vehicle) {
+    vehiclePromptEl.classList.add("hidden");
+    ziplinePromptEl.classList.add("hidden");
+    if (tapped) exitVehicle(player);
+    return;
+  }
+  if (!player.alive || player.downed) { vehiclePromptEl.classList.add("hidden"); return; }
+
+  const v = nearbyVehicle(player);
+  vehiclePromptEl.classList.toggle("hidden", !v);
+  if (v) {
+    vehiclePromptText.textContent = v.driver ? `Ride in the ${v.def.name}` : `Drive the ${v.def.name}`;
+    if (tapped) enterVehicle(v, player);
   }
 }
 
@@ -2648,6 +3498,22 @@ function updateDowned(dt) {
   // decay progress if nobody is standing over you
   if (!helper) player.reviveProgress = Math.max(0, player.reviveProgress - dt * 0.5);
   if (player.bleed <= 0) playerDie();
+}
+
+/** Nearest living enemy of this bot — the player counts as a target for red. */
+function nearestEnemyOf(b) {
+  let best = null, bestD = Infinity;
+  const oppTeam = b.team === "red" ? "blue" : "red";
+  if (b.team === "red" && player.alive && !player.downed) {
+    bestD = b.pos.distanceTo(player.pos);
+    best = { pos: player.pos, isPlayer: true };
+  }
+  for (const o of bots) {
+    if (!o.alive || o.downed || o.team !== oppTeam) continue;
+    const d = b.pos.distanceTo(o.pos);
+    if (d < bestD) { bestD = d; best = o; }
+  }
+  return best;
 }
 
 function clampBot(b) {
@@ -2856,6 +3722,7 @@ const state = { mode: "team", teamSize: 3, blueScore: 0, redScore: 0, target: 30
 
 function startMatch(mode, teamSize, roleKey, diffKey, mapKey) {
   const m = MODES[mode] || MODES.team;
+  resetVehicleState();      // never inherit a ride from the previous match
   state.mode = mode; state.teamSize = teamSize;
   state.blueScore = 0; state.redScore = 0; state.wave = 0; state.waveKills = 0;
   state.target = m.target || 0;
@@ -3180,6 +4047,16 @@ function setWidth(el, v) {
 
 function updateHUD() {
   const k = curKey();
+
+  // vehicle panel: chassis health + speed while aboard (R-VEH-1)
+  const rv = player.vehicle;
+  vehicleHudEl.classList.toggle("hidden", !rv);
+  if (rv) {
+    setText(vehicleHudName, rv.driver === player ? rv.def.name : `${rv.def.name} (passenger)`);
+    setWidth(vehicleHudFill, Math.max(0, rv.hp / rv.maxHp * 100).toFixed(1) + "%");
+    setText(vehicleHudSpeed, Math.round(Math.abs(rv.speed) * 3.6) + " km/h");
+  }
+
   setWidth(hpFill, (player.hp / player.maxHp * 100).toFixed(1) + "%");
   setText(hpText, Math.ceil(player.hp));
   setWidth(stFill, player.stamina.toFixed(0) + "%");
@@ -3342,6 +4219,8 @@ const roleDescEl = document.getElementById("roleDesc");
 document.querySelectorAll(".role-btn").forEach(b => b.addEventListener("click", () => {
   document.querySelectorAll(".role-btn").forEach(x => x.classList.remove("active"));
   b.classList.add("active"); selRole = b.dataset.role;
+  profile.role = selRole; P.save();           // the Armory filters weapons by role (R-GUN-5)
+  enforceRoleLoadout();
   const r = ROLES[selRole];
   roleDescEl.textContent = `${r.desc}  —  ${r.perk}`;
 }));
@@ -3488,6 +4367,45 @@ buildMap(currentMap);
 // ============================================================
 function updatePlayer(dt) {
   if (!player.alive) return;
+
+  // E handling for getting in/out of vehicles runs before anything else (R-VEH-1)
+  updateVehicleInput();
+
+  // ----- riding a vehicle: the vehicle moves you, the camera swings out
+  // behind it (third-person) and you can still aim + fire any weapon -----
+  if (player.vehicle) {
+    const v = player.vehicle;
+    // safety net: if the vehicle we think we're in isn't on the live map any
+    // more (match ended, map rebuilt, wreck cleaned up), bail out on foot
+    // instead of staying stuck in the driving camera with no controls.
+    if (!v.alive || !vehicles.includes(v)) {
+      player.vehicle = null;
+      viewGun.visible = true;
+      vehicleHudEl.classList.add("hidden");
+    } else {
+    const eye = new THREE.Vector3(player.pos.x, player.pos.y + v.def.tall * 0.7, player.pos.z);
+    // orbit the camera behind the player's look direction, pulled back and up
+    const back = 9 + v.def.len * 0.55;
+    const camPos = new THREE.Vector3(
+      eye.x + Math.sin(player.yaw) * back,
+      eye.y + 4.2,
+      eye.z + Math.cos(player.yaw) * back
+    );
+    // don't let the camera sink through the ground
+    camPos.y = Math.max(1.6, camPos.y);
+    camera.position.copy(camPos);
+    camera.rotation.y = player.yaw;
+    camera.rotation.x = player.pitch + recoil - 0.16;
+    recoil *= 0.86;
+    // the camera is outside the vehicle, so the first-person viewmodel would
+    // just float in mid-air — hide it while riding (shooting still works, it
+    // raycasts from the camera)
+    viewGun.visible = false;
+    return;
+    }
+  }
+
+  if (!viewGun.visible) viewGun.visible = true;
 
   // riding a zipline overrides normal movement (R-MAP-4)
   updateZipline(dt);
@@ -3639,6 +4557,7 @@ function frame(dt) {
     refreshShieldMeshes();   // keeps the raycast cache correct
 
     for (const b of bots) { tuneRespawn(b); updateBot(b, dt); animateSoldier(b, dt); }
+    updateVehicles(dt);      // drivable vehicles + ramming (R-VEH-1)
     OBJ.updateObjectives(dt);
     updateEnvironmentCycle(dt);   // day/night + weather drift over the match (R-MAP-6)
 

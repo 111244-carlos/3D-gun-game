@@ -200,7 +200,7 @@ export const MAPS = {
     key: "compound", name: "Compound",
     ground: 0x5c6b52, sky: 0x9fb8c9, grid: [0x35402f, 0x475239], fog: [60, 220],
     coverCount: 26, coverScale: 1.0, palette: [0x8a6a3f, 0x6f7b63, 0x7a5233, 0x566072],
-    prop: "crates", destructible: 0.5, vehicles: 3, ziplines: 0, surface: "dirt",
+    prop: "crates", destructible: 0.5, vehicles: 5, ziplines: 0, surface: "dirt",
     neon: 0x39e6ff,
     desc: "Open military ground with crates and parked vehicles. Balanced.",
   },
@@ -208,7 +208,7 @@ export const MAPS = {
     key: "warehouse", name: "Warehouse",
     ground: 0x4a4a52, sky: 0x6f7784, grid: [0x2f3138, 0x3d4049], fog: [40, 150],
     coverCount: 40, coverScale: 1.25, palette: [0x7d6444, 0x5a6470, 0x8a5a34, 0x49525c],
-    prop: "crates", destructible: 0.7, vehicles: 1, ziplines: 0, surface: "metal",
+    prop: "crates", destructible: 0.7, vehicles: 5, ziplines: 0, surface: "metal",
     neon: 0xffa63c,
     desc: "Dense stacked crates, tight lanes. Most cover can be shot apart.",
   },
@@ -216,7 +216,7 @@ export const MAPS = {
     key: "dunes", name: "Dunes",
     ground: 0xb8a074, sky: 0xdcc9a0, grid: [0x8f7c56, 0xa08c62], fog: [90, 300],
     coverCount: 14, coverScale: 1.5, palette: [0xc2a878, 0xa8905f, 0xd0bb8c, 0x94805a],
-    prop: "rocks", destructible: 0.2, vehicles: 2, ziplines: 0, surface: "sand",
+    prop: "rocks", destructible: 0.2, vehicles: 5, ziplines: 0, surface: "sand",
     neon: 0xff6a3c,
     desc: "Wide open sand, long sightlines. Sniper country.",
   },
@@ -224,7 +224,7 @@ export const MAPS = {
     key: "forest", name: "Forest",
     ground: 0x3d5134, sky: 0x93b4a2, grid: [0x2b3a25, 0x36492e], fog: [45, 190],
     coverCount: 34, coverScale: 1.0, palette: [0x5b432c, 0x6a4f33, 0x4e3a26, 0x60482f],
-    prop: "trees", destructible: 0.6, vehicles: 2, ziplines: 3, surface: "dirt",
+    prop: "trees", destructible: 0.6, vehicles: 5, ziplines: 3, surface: "dirt",
     neon: 0x39ff8f,
     desc: "Dense woods with RIDEABLE ZIPLINES. Trees can be shot down.",
   },
@@ -232,7 +232,7 @@ export const MAPS = {
     key: "snowfield", name: "Snowfield",
     ground: 0xdfe7ee, sky: 0xcdd8e2, grid: [0xb4c2cd, 0xc6d2dc], fog: [50, 200],
     coverCount: 20, coverScale: 1.3, palette: [0xa8b4bf, 0xbcc7d1, 0x94a1ad, 0xcfd8e0],
-    prop: "rocks", destructible: 0.35, vehicles: 2, ziplines: 0, surface: "snow",
+    prop: "rocks", destructible: 0.35, vehicles: 5, ziplines: 0, surface: "snow",
     neon: 0x6ad4ff,
     desc: "Frozen open ground. Bright, exposed, cold.",
   },
@@ -282,6 +282,52 @@ export const WEATHER_KEYS = Object.keys(WEATHER);
 
 // ---------- DESTRUCTION (R-MAP-3) ----------
 export const PROP_HP = { crates: 120, trees: 160, buildings: 400, rocks: 260, vehicle: 900 };
+
+// ---------- DRIVABLE VEHICLES (R-VEH-1) ----------
+// Every one of these can actually be driven by the player AND by bots.
+// hp        : chassis health; at 0 it explodes and kills whoever is inside
+// maxSpeed  : top speed (player runs at ~8.5, sprints ~13 — so all of these outrun a soldier)
+// accel     : how fast it gets there;  brake: deceleration when reversing/stopping
+// turn      : steering rate in radians/sec at speed
+// seats     : total occupants INCLUDING the driver
+// ram       : damage dealt to a person hit at full speed (scales down with speed)
+// boom      : explosion radius + damage when the vehicle is destroyed
+// len/wid/tall: chassis dimensions, also used for the collision box and ramming
+export const VEHICLES = {
+  jeep: {
+    key: "jeep", name: "Jeep", hp: 620, maxSpeed: 27, accel: 17, brake: 26, turn: 1.9,
+    seats: 4, ram: 55, boom: { radius: 11, dmg: 95 },
+    len: 6.4, wid: 3.0, tall: 2.2, body: 0x4d5348, trim: 0x39413a, style: "jeep",
+    desc: "Fast, light, four seats. Dies quickly to sustained fire.",
+  },
+  buggy: {
+    key: "buggy", name: "Buggy", hp: 380, maxSpeed: 32, accel: 23, brake: 30, turn: 2.5,
+    seats: 2, ram: 42, boom: { radius: 9, dmg: 75 },
+    len: 5.0, wid: 2.8, tall: 1.8, body: 0x6b5a32, trim: 0x4a3e24, style: "buggy",
+    desc: "Very quick and nimble, but almost no armour.",
+  },
+  apc: {
+    key: "apc", name: "APC", hp: 1500, maxSpeed: 18, accel: 9, brake: 16, turn: 1.15,
+    seats: 6, ram: 90, boom: { radius: 15, dmg: 130 },
+    len: 8.0, wid: 3.6, tall: 3.0, body: 0x3f4a3c, trim: 0x2c3529, style: "apc",
+    desc: "Slow rolling fortress. Six seats and it takes a beating.",
+  },
+  truck: {
+    key: "truck", name: "Truck", hp: 1000, maxSpeed: 21, accel: 11, brake: 18, turn: 1.35,
+    seats: 5, ram: 78, boom: { radius: 13, dmg: 110 },
+    len: 7.6, wid: 3.2, tall: 3.0, body: 0x55503f, trim: 0x3b382d, style: "truck",
+    desc: "Troop hauler — tough, roomy, not fast.",
+  },
+  bike: {
+    key: "bike", name: "Bike", hp: 220, maxSpeed: 36, accel: 28, brake: 34, turn: 3.1,
+    seats: 2, ram: 28, boom: { radius: 7, dmg: 55 },
+    len: 3.0, wid: 1.2, tall: 1.6, body: 0x2f3338, trim: 0x1e2125, style: "bike",
+    desc: "Fastest thing on the map and completely exposed.",
+  },
+};
+export const VEHICLE_KEYS = Object.keys(VEHICLES);
+// how long a wreck takes to be replaced by a fresh vehicle elsewhere on the map
+export const VEHICLE_RESPAWN = 25;
 
 // ---------- ROLES (R-ROL-1/2) ----------
 // Chosen by the player AND assigned to bots. Each plays measurably differently.
@@ -362,34 +408,100 @@ export const SLOT_LABELS = ["Primary", "Secondary", "Melee", "Utility"];
 
 // ---------- GUNS ----------
 // dmg = per bullet. rpm = rounds/min. spread = base inaccuracy. kick = recoil.
+// ---------- COMBAT RULES (R-GUN-2/3) ----------
+// Damage now falls off with range and rewards headshots, so positioning and
+// aim matter instead of every bullet doing full damage at any distance.
+export const FALLOFF = {
+  full: 22,     // full damage out to here (metres)
+  far: 95,      // beyond here damage bottoms out
+  min: 0.42,    // floor: a long-range hit still does 42% of listed damage
+};
+export const HEADSHOT = { mult: 2.0, meleeMult: 1.5 };
+
+/** Damage multiplier for a shot that travelled `dist` metres. */
+export function falloffMul(dist, gun) {
+  if (gun && gun.noFalloff) return 1;             // energy weapons don't drop off
+  const f = gun && gun.falloff ? gun.falloff : FALLOFF;
+  if (dist <= f.full) return 1;
+  if (dist >= f.far) return f.min;
+  const t = (dist - f.full) / (f.far - f.full);
+  return 1 - (1 - f.min) * t;
+}
+
+// ---------- WEAPONS ----------
+// slot   : 0 primary · 1 secondary · 2 melee
+// kind   : "hitscan" (default) | "rocket" | "beam" | "flame"
+// roles  : which roles may carry it (R-GUN-5). Omitted = anyone can.
+// alt    : secondary fire mode, toggled with V (R-GUN-1)
+// spinup : seconds of wind-up before the first shot (minigun)
 export const GUNS = {
-  // --- defaults owned at start (R-LDO-1) ---
-  rifle:    { name: "Rifle",       slot: 0, dmg: 24, rpm: 640,  mag: 30, reserve: 120, spread: 0.9, reload: 2.0, auto: true,  kick: 0.9, cost: 0,   free: true },
+  // --- defaults owned at start (R-LDO-1) — usable by every role ---
+  rifle:    { name: "Rifle",       slot: 0, dmg: 19, rpm: 600,  mag: 30, reserve: 120, spread: 1.05, reload: 2.1, auto: true,  kick: 1.0, cost: 0,   free: true, alt: "burst3" },
   pistol:   { name: "Pistol",      slot: 1, dmg: 20, rpm: 360,  mag: 12, reserve: 60,  spread: 1.1, reload: 1.4, auto: false, kick: 0.7, cost: 0,   free: true },
   fist:     { name: "Fist",        slot: 2, dmg: 45, rpm: 180,  mag: 1,  reserve: 0,   spread: 0,   reload: 0,   auto: false, kick: 0.3, cost: 0,   free: true, melee: true, range: 2.6 },
 
   // --- purchasable primaries ---
-  smg:      { name: "SMG",         slot: 0, dmg: 10, rpm: 900,  mag: 35, reserve: 140, spread: 1.6, reload: 1.7, auto: true,  kick: 0.6, cost: 260 },
-  shotgun:  { name: "Shotgun",     slot: 0, dmg: 13, rpm: 78,   mag: 6,  reserve: 36,  spread: 3.6, reload: 2.6, auto: false, kick: 1.9, cost: 300, pellets: 8 },
-  burst:    { name: "Burst Rifle", slot: 0, dmg: 21, rpm: 760,  mag: 30, reserve: 120, spread: 0.8, reload: 2.1, auto: false, kick: 1.0, cost: 350, burst: 3 },
-  sniper:   { name: "Sniper",      slot: 0, dmg: 125,rpm: 48,   mag: 5,  reserve: 25,  spread: 0.05,reload: 3.0, auto: false, kick: 2.6, cost: 420, zoom: 4 },
-  lmg:      { name: "LMG",         slot: 0, dmg: 19, rpm: 820,  mag: 80, reserve: 240, spread: 1.9, reload: 4.0, auto: true,  kick: 1.2, cost: 720 },
-  carbine:  { name: "Carbine",     slot: 0, dmg: 23, rpm: 700,  mag: 28, reserve: 112, spread: 0.85,reload: 1.9, auto: true,  kick: 0.85,cost: 380 },
-  dmr:      { name: "DMR",         slot: 0, dmg: 42, rpm: 300,  mag: 20, reserve: 100, spread: 0.4, reload: 2.3, auto: false, kick: 1.4, cost: 520, zoom: 2.5 },
-  autoshot: { name: "Auto Shotgun",slot: 0, dmg: 11, rpm: 220,  mag: 10, reserve: 40,  spread: 3.2, reload: 3.0, auto: true,  kick: 1.6, cost: 480, pellets: 7 },
-  bullpup:  { name: "Bullpup Rifle", slot: 0, dmg: 20, rpm: 780, mag: 32, reserve: 128, spread: 0.75,reload: 1.8, auto: true, kick: 0.8, cost: 400 },
+  smg:      { name: "SMG",         slot: 0, dmg: 10, rpm: 900,  mag: 35, reserve: 140, spread: 1.6, reload: 1.7, auto: true,  kick: 0.6, cost: 260, roles: ["rusher", "medic"] },
+  shotgun:  { name: "Shotgun",     slot: 0, dmg: 13, rpm: 78,   mag: 6,  reserve: 36,  spread: 3.6, reload: 2.6, auto: false, kick: 1.9, cost: 300, pellets: 8, roles: ["rusher", "heavy"] },
+  burst:    { name: "Burst Rifle", slot: 0, dmg: 21, rpm: 760,  mag: 30, reserve: 120, spread: 0.8, reload: 2.1, auto: false, kick: 1.0, cost: 350, burst: 3, roles: ["rusher", "medic", "sniper"], alt: "auto" },
+  sniper:   { name: "Sniper",      slot: 0, dmg: 175, rpm: 48,  mag: 5,  reserve: 30,  spread: 0.03, reload: 2.7, auto: false, kick: 2.6, cost: 420, zoom: 4, roles: ["sniper"], noFalloff: true },
+  lmg:      { name: "LMG",         slot: 0, dmg: 19, rpm: 820,  mag: 80, reserve: 240, spread: 1.9, reload: 4.0, auto: true,  kick: 1.2, cost: 720, roles: ["heavy"] },
+  carbine:  { name: "Carbine",     slot: 0, dmg: 23, rpm: 700,  mag: 28, reserve: 112, spread: 0.85, reload: 1.9, auto: true, kick: 0.85, cost: 380, roles: ["rusher", "medic"], alt: "semi" },
+  dmr:      { name: "DMR",         slot: 0, dmg: 46, rpm: 300,  mag: 20, reserve: 100, spread: 0.4, reload: 2.3, auto: false, kick: 1.4, cost: 520, zoom: 2.5, roles: ["sniper", "medic"] },
+  autoshot: { name: "Auto Shotgun",slot: 0, dmg: 11, rpm: 220,  mag: 10, reserve: 40,  spread: 3.2, reload: 3.0, auto: true,  kick: 1.6, cost: 480, pellets: 7, roles: ["rusher", "heavy"] },
+  bullpup:  { name: "Bullpup Rifle", slot: 0, dmg: 20, rpm: 780, mag: 32, reserve: 128, spread: 0.75, reload: 1.8, auto: true, kick: 0.8, cost: 400, roles: ["rusher", "medic"], alt: "burst3" },
+
+  // --- new heavy ordnance (R-GUN-1) ---
+  rocket:   { name: "Rocket Launcher", slot: 0, dmg: 40, rpm: 40, mag: 2, reserve: 8, spread: 0.3, reload: 3.6, auto: false, kick: 3.2, cost: 900,
+              kind: "rocket", blast: { radius: 9, dmg: 130 }, speed: 52, roles: ["heavy"] },
+  gl:       { name: "Grenade Launcher", slot: 0, dmg: 25, rpm: 70, mag: 4, reserve: 16, spread: 0.5, reload: 3.2, auto: false, kick: 2.4, cost: 760,
+              kind: "rocket", arc: true, blast: { radius: 7.5, dmg: 95 }, speed: 34, roles: ["heavy"] },
+  minigun:  { name: "Minigun",     slot: 0, dmg: 15, rpm: 1400, mag: 150, reserve: 300, spread: 2.4, reload: 5.5, auto: true, kick: 1.0, cost: 1100,
+              spinup: 0.75, roles: ["heavy"] },
+  flamer:   { name: "Flamethrower", slot: 0, dmg: 9, rpm: 600, mag: 100, reserve: 200, spread: 0, reload: 3.4, auto: true, kick: 0.2, cost: 820,
+              kind: "flame", range: 14, cone: 0.42, roles: ["heavy"] },
+  laserrifle:{ name: "Pulse Laser", slot: 0, dmg: 26, rpm: 480, mag: 40, reserve: 160, spread: 0.25, reload: 2.4, auto: true, kick: 0.5, cost: 980,
+              kind: "beam", noFalloff: true, roles: ["rusher", "medic", "sniper", "heavy"] },
+  crossbow: { name: "Crossbow",    slot: 0, dmg: 130, rpm: 55, mag: 1, reserve: 20, spread: 0.05, reload: 2.2, auto: false, kick: 1.5, cost: 640,
+              zoom: 2.5, silentShot: true, noFalloff: true, roles: ["sniper"] },
+  marksman: { name: "Marksman Rifle", slot: 0, dmg: 58, rpm: 210, mag: 12, reserve: 72, spread: 0.3, reload: 2.5, auto: false, kick: 1.7, cost: 700,
+              zoom: 3, roles: ["sniper"], alt: "semi" },
 
   // --- purchasable secondaries ---
   revolver: { name: "Revolver",    slot: 1, dmg: 58, rpm: 150,  mag: 6,  reserve: 30,  spread: 0.9, reload: 2.2, auto: false, kick: 1.6, cost: 240 },
-  machinep: { name: "Machine Pistol", slot: 1, dmg: 12, rpm: 1000, mag: 24, reserve: 96, spread: 2.2, reload: 1.5, auto: true, kick: 0.7, cost: 300 },
+  machinep: { name: "Machine Pistol", slot: 1, dmg: 12, rpm: 1000, mag: 24, reserve: 96, spread: 2.2, reload: 1.5, auto: true, kick: 0.7, cost: 300, roles: ["rusher", "medic"] },
   tacpistol:{ name: "Tactical Pistol", slot: 1, dmg: 16, rpm: 480, mag: 15, reserve: 75, spread: 1.0, reload: 1.3, auto: false, kick: 0.6, cost: 180 },
-  sawedoff: { name: "Sawed-Off",   slot: 1, dmg: 14, rpm: 100,  mag: 2,  reserve: 12,  spread: 4.5, reload: 2.0, auto: false, kick: 2.2, cost: 260, pellets: 8 },
+  sawedoff: { name: "Sawed-Off",   slot: 1, dmg: 14, rpm: 100,  mag: 2,  reserve: 12,  spread: 4.5, reload: 2.0, auto: false, kick: 2.2, cost: 260, pellets: 8, roles: ["rusher", "heavy"] },
+  laserpistol:{ name: "Pulse Sidearm", slot: 1, dmg: 24, rpm: 400, mag: 20, reserve: 80, spread: 0.5, reload: 1.6, auto: false, kick: 0.5, cost: 340,
+              kind: "beam", noFalloff: true },
+  handcannon:{ name: "Hand Cannon", slot: 1, dmg: 78, rpm: 90, mag: 5, reserve: 25, spread: 1.2, reload: 2.4, auto: false, kick: 2.4, cost: 520, roles: ["heavy", "sniper"] },
 
   // --- purchasable melee ---
   knife:    { name: "Combat Knife", slot: 2, dmg: 70, rpm: 300, mag: 1, reserve: 0, spread: 0, reload: 0, auto: false, kick: 0.2, cost: 150, melee: true, range: 2.8 },
   katana:   { name: "Katana",       slot: 2, dmg: 110, rpm: 160, mag: 1, reserve: 0, spread: 0, reload: 0, auto: false, kick: 0.3, cost: 480, melee: true, range: 3.2 },
   axe:      { name: "Combat Axe",   slot: 2, dmg: 95, rpm: 150, mag: 1, reserve: 0, spread: 0, reload: 0, auto: false, kick: 0.25, cost: 320, melee: true, range: 3.0 },
+  machete:  { name: "Machete",      slot: 2, dmg: 82, rpm: 210, mag: 1, reserve: 0, spread: 0, reload: 0, auto: false, kick: 0.22, cost: 240, melee: true, range: 3.0, roles: ["rusher", "medic"] },
+  sledge:   { name: "Sledgehammer", slot: 2, dmg: 140, rpm: 95, mag: 1, reserve: 0, spread: 0, reload: 0, auto: false, kick: 0.4, cost: 560, melee: true, range: 3.1, roles: ["heavy"] },
 };
+
+// ---------- ALT FIRE MODES (R-GUN-1) — toggled in-match with V ----------
+export const FIRE_MODES = {
+  auto:   { name: "Auto",     auto: true,  burst: 0 },
+  semi:   { name: "Semi",     auto: false, burst: 0, kickMul: 0.7, spreadMul: 0.6 },
+  burst3: { name: "Burst-3",  auto: false, burst: 3, spreadMul: 0.8 },
+};
+
+/** May this role carry this weapon? (R-GUN-5) */
+export function roleCanUse(gunKey, roleKey) {
+  const g = GUNS[gunKey];
+  if (!g) return false;
+  if (!g.roles) return true;              // unrestricted (starter gear)
+  return g.roles.includes(roleKey);
+}
+/** Every weapon a role may carry in a given slot. */
+export function gunsForRole(roleKey, slot) {
+  return Object.keys(GUNS).filter(k => GUNS[k].slot === slot && roleCanUse(k, roleKey));
+}
 
 // ---------- UTILITIES (slot 4) ----------
 // kind drives in-match behavior. `frag` is free/default (R-LDO-1).
@@ -448,6 +560,27 @@ export function levelFromXp(totalXp) {
 
 // ---------- STAT MATH ----------
 /** Effective gun stats after gun level + attachments. */
+/**
+ * Gun level perks (R-GUN-4). Levelling no longer just nudges numbers — each
+ * level hands you a concrete new thing:
+ *   Lv2 → faster reloads
+ *   Lv3 → the weapon's alt fire mode is unlocked (V)
+ *   Lv4 → +50% spare ammo
+ *   Lv5 → "veteran" finish on the model + a real accuracy bump
+ */
+export const GUN_LEVEL_PERKS = {
+  2: { key: "reload", name: "Fast Reload", desc: "-18% reload time" },
+  3: { key: "altfire", name: "Alt Fire", desc: "Unlocks the second fire mode (V)" },
+  4: { key: "ammo", name: "Deep Pockets", desc: "+50% reserve ammo" },
+  5: { key: "master", name: "Master Finish", desc: "-20% spread + gold accents" },
+};
+/** The perks a gun at `lvl` currently has. */
+export function gunPerks(lvl) {
+  const out = [];
+  for (let i = 2; i <= lvl; i++) if (GUN_LEVEL_PERKS[i]) out.push(GUN_LEVEL_PERKS[i]);
+  return out;
+}
+
 export function gunStats(key, profile) {
   const base = GUNS[key];
   if (!base) return null;
@@ -459,6 +592,14 @@ export function gunStats(key, profile) {
   let spread = base.spread;
   let mag = base.mag;
   let zoom = base.zoom || 1;
+  let reload = base.reload;
+  let reserve = base.reserve;
+
+  // ---- level perks (R-GUN-4) ----
+  if (lvl >= 2) reload *= 0.82;
+  if (lvl >= 4) reserve = Math.round(reserve * 1.5);
+  if (lvl >= 5) spread *= 0.8;
+  const altUnlocked = lvl >= 3 && !!base.alt;
 
   if (atts.includes("extmag")) mag = Math.round(mag * 1.5);
   if (atts.includes("grip")) kick *= 0.75;
@@ -468,8 +609,24 @@ export function gunStats(key, profile) {
 
   return {
     ...base,
-    dmg, kick, spread, mag, zoom,
+    dmg, kick, spread, mag, zoom, reload, reserve,
     level: lvl,
+    altUnlocked,
+    masterFinish: lvl >= 5,
     silenced: atts.includes("silencer"),
+  };
+}
+
+/** Apply an alt fire mode on top of a gun's stats (R-GUN-1). */
+export function applyFireMode(stats, modeKey) {
+  const m = FIRE_MODES[modeKey];
+  if (!m) return stats;
+  return {
+    ...stats,
+    auto: m.auto,
+    burst: m.burst || 0,
+    kick: stats.kick * (m.kickMul || 1),
+    spread: stats.spread * (m.spreadMul || 1),
+    modeName: m.name,
   };
 }

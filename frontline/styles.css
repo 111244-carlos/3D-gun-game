@@ -396,3 +396,27 @@ html, body {
 
 .lock-prompt { position: fixed; inset: 0; display: flex; align-items: center; justify-content: center; font-size: 20px; letter-spacing: 3px; color: #cdd8e4; background: rgba(6,9,14,0.4); pointer-events: auto; cursor: pointer; }
 .lock-prompt.hidden { display: none; }
+
+/* ===================== VEHICLES (R-VEH-1) ===================== */
+.vehicle-prompt { top: 64%; }
+.vehicle-hud {
+  position: fixed; right: 18px; bottom: 130px;
+  width: 210px; padding: 10px 12px;
+  background: rgba(8, 12, 18, 0.78);
+  border: 1px solid rgba(120, 170, 255, 0.2);
+  border-radius: 10px;
+  font-size: 12px; color: #d6e2ee;
+}
+.vehicle-hud-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 6px; }
+.vehicle-hud-top span:first-child { font-weight: 800; letter-spacing: 0.5px; }
+.vehicle-hud-top span:last-child { color: #8fa3b8; font-variant-numeric: tabular-nums; }
+.vehicle-hud-bar { height: 7px; border-radius: 4px; background: rgba(255,255,255,0.12); overflow: hidden; }
+.vehicle-hud-bar i { display: block; height: 100%; width: 100%; background: linear-gradient(90deg, #ffb038, #ff7a3c); }
+.vehicle-hud-hint { margin-top: 6px; font-size: 10px; color: #7d92a8; letter-spacing: 0.6px; text-transform: uppercase; }
+
+/* headshot hitmarker (R-GUN-3) */
+.hitmarker.head i { background: #ff5a5a; height: 12px; width: 4px; }
+
+/* role-locked weapons + role tags in the Armory (R-GUN-5) */
+.chip.locked { opacity: 0.4; cursor: not-allowed; }
+.role-tag { font-size: 10px; color: #7d92a8; letter-spacing: 0.6px; text-transform: uppercase; margin: 6px 0 4px; }
